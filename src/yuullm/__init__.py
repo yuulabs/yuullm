@@ -1,10 +1,14 @@
-"""yuullm – Unified streaming LLM interface.
+"""yuullm -- Unified streaming LLM interface.
 
 Public API re-exports for convenient access::
 
     import yuullm
 
     client = yuullm.YLLMClient(...)
+    messages = [
+        yuullm.system("You are helpful."),
+        yuullm.user("What is 2+2?"),
+    ]
     stream, store = await client.stream(messages)
 """
 
@@ -12,20 +16,22 @@ from .client import YLLMClient
 from .pricing import PriceCalculator
 from .provider import Provider
 from .types import (
-    AssistantMessage,
     Cost,
+    History,
+    Item,
     Message,
     Reasoning,
     Response,
     StreamItem,
     StreamResult,
     Store,
-    SystemMessage,
     ToolCall,
-    ToolResultMessage,
-    ToolSpec,
     Usage,
-    UserMessage,
+    # Helper functions for constructing messages
+    assistant,
+    system,
+    tool,
+    user,
 )
 
 # Lazy import to avoid hard dependency on provider SDKs at import time
@@ -45,14 +51,14 @@ __all__ = [
     "StreamItem",
     "StreamResult",
     "Store",
-    # Messages
-    "SystemMessage",
-    "UserMessage",
-    "AssistantMessage",
-    "ToolResultMessage",
+    # Message types & helpers
     "Message",
-    # Tool spec
-    "ToolSpec",
+    "Item",
+    "History",
+    "system",
+    "user",
+    "assistant",
+    "tool",
     # Usage & Cost
     "Usage",
     "Cost",

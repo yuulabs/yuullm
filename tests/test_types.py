@@ -3,16 +3,15 @@
 import msgspec
 
 from yuullm import (
-    AssistantMessage,
     Cost,
     Reasoning,
     Response,
-    SystemMessage,
     ToolCall,
-    ToolResultMessage,
-    ToolSpec,
     Usage,
-    UserMessage,
+    system,
+    user,
+    assistant,
+    tool,
 )
 
 
@@ -34,7 +33,7 @@ class TestStreamItems:
     def test_frozen(self):
         r = Reasoning(text="x")
         try:
-            r.text = "y"
+            r.text = "y"  # type: ignore[misc]
             assert False, "Should be frozen"
         except AttributeError:
             pass
@@ -42,39 +41,42 @@ class TestStreamItems:
 
 class TestMessages:
     def test_system_message(self):
-        m = SystemMessage(content="You are helpful.")
-        assert m.role == "system"
-        assert m.content == "You are helpful."
+        m = system("You are helpful.")
+        assert m == ("system", ["You are helpful."])
+        assert m[0] == "system"
+        assert m[1] == ["You are helpful."]
 
     def test_user_message(self):
-        m = UserMessage(content="Hi")
-        assert m.role == "user"
+        m = user("Hi")
+        assert m == ("user", ["Hi"])
+        assert m[0] == "user"
+
+    def test_user_multimodal(self):
+        m = user(
+            "What is this?", {"type": "image_url", "url": "http://example.com/img.png"}
+        )
+        assert m[0] == "user"
+        assert len(m[1]) == 2
+        assert m[1][0] == "What is this?"
+        assert m[1][1]["type"] == "image_url"
 
     def test_assistant_message_text(self):
-        m = AssistantMessage(content="Hello!")
-        assert m.role == "assistant"
-        assert m.content == "Hello!"
-        assert m.tool_calls is None
+        m = assistant("Hello!")
+        assert m == ("assistant", ["Hello!"])
 
     def test_assistant_message_with_tool_calls(self):
-        tc = ToolCall(id="1", name="fn", arguments="{}")
-        m = AssistantMessage(tool_calls=[tc])
-        assert m.tool_calls == [tc]
+        tc = {"type": "tool_call", "id": "1", "name": "fn", "arguments": "{}"}
+        m = assistant("thinking...", tc)
+        assert m[0] == "assistant"
+        assert len(m[1]) == 2
+        assert m[1][1]["type"] == "tool_call"
 
     def test_tool_result_message(self):
-        m = ToolResultMessage(tool_call_id="1", content="result")
-        assert m.role == "tool"
-        assert m.tool_call_id == "1"
-
-
-class TestToolSpec:
-    def test_basic(self):
-        ts = ToolSpec(
-            name="search",
-            description="Search the web",
-            parameters={"type": "object", "properties": {"q": {"type": "string"}}},
-        )
-        assert ts.name == "search"
+        m = tool("tc_1", "result")
+        assert m[0] == "tool"
+        assert m[1][0]["type"] == "tool_result"
+        assert m[1][0]["tool_call_id"] == "tc_1"
+        assert m[1][0]["content"] == "result"
 
 
 class TestUsage:

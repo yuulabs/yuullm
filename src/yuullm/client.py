@@ -1,8 +1,9 @@
-"""YLLMClient – user-facing entry point."""
+"""YLLMClient -- user-facing entry point."""
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Any
 
 from .pricing import PriceCalculator
 from .provider import Provider
@@ -11,7 +12,6 @@ from .types import (
     Message,
     StreamItem,
     StreamResult,
-    ToolSpec,
     Usage,
 )
 
@@ -23,13 +23,16 @@ class YLLMClient:
     exposing a simple ``stream()`` method that returns standardised
     ``StreamItem`` objects and populates a *store* dict with ``Usage``
     and ``Cost`` after the stream is exhausted.
+
+    Tools are passed as ``list[dict]`` -- raw json_schema dicts from
+    yuutools (or any other source).  No ToolSpec class needed.
     """
 
     def __init__(
         self,
         provider: Provider,
         default_model: str,
-        tools: list[ToolSpec] | None = None,
+        tools: list[dict[str, Any]] | None = None,
         price_calculator: PriceCalculator | None = None,
     ) -> None:
         self.provider = provider
@@ -42,7 +45,7 @@ class YLLMClient:
         messages: list[Message],
         *,
         model: str | None = None,
-        tools: list[ToolSpec] | None = None,
+        tools: list[dict[str, Any]] | None = None,
         **kwargs,
     ) -> StreamResult:
         """Start a streaming completion.
@@ -50,8 +53,8 @@ class YLLMClient:
         After the returned async iterator is fully consumed the *store*
         dict will contain:
 
-        - ``"usage"`` – :class:`Usage`
-        - ``"cost"``  – :class:`Cost` | ``None``
+        - ``"usage"`` -- :class:`Usage`
+        - ``"cost"``  -- :class:`Cost` | ``None``
         """
         effective_model = model or self.default_model
         effective_tools = tools if tools is not None else self.tools

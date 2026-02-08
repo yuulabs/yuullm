@@ -1,10 +1,10 @@
-"""Provider protocol – the contract every LLM backend must satisfy."""
+"""Provider protocol -- the contract every LLM backend must satisfy."""
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
-from .types import Message, StreamItem, StreamResult, ToolSpec
+from .types import Message, StreamResult
 
 
 class Provider(Protocol):
@@ -15,6 +15,10 @@ class Provider(Protocol):
     iterator is exhausted the store will contain at least ``"usage"``
     (:class:`Usage`).  If the provider can report cost directly (e.g.
     OpenRouter) it should also set ``"provider_cost"`` to a ``float``.
+
+    Tools are passed as ``list[dict]`` -- raw json_schema dicts, exactly
+    as produced by ``yuutools.ToolManager.specs()``.  No ToolSpec class
+    needed.
     """
 
     @property
@@ -27,7 +31,7 @@ class Provider(Protocol):
         messages: list[Message],
         *,
         model: str,
-        tools: list[ToolSpec] | None = None,
+        tools: list[dict[str, Any]] | None = None,
         **kwargs,
     ) -> StreamResult:
         """Start a streaming completion.

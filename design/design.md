@@ -9,6 +9,15 @@ yuullm 提供统一的流式 LLM 接口抽象层。它有两个核心职责：
 
 yuullm **不负责埋点**（无 session 概念）。它只关注：把请求发出去，把流标准化地收回来，再把 usage/cost 算清楚。
 
+### 设计原则：轻量抽象
+
+yuullm 刻意避免引入过重的类型抽象。核心哲学：
+
+- **消息是元组**，不是类。`Message = (role, items)` -- 用户不需要导入 `SystemMessage`, `UserMessage` 等一堆类名。
+- **工具是 dict**，不是 ToolSpec。直接使用 `list[dict]`，与 yuutools 的 `manager.specs()` 输出无缝对接，但不产生硬依赖。
+- **输出流用 struct** -- `Reasoning | ToolCall | Response` 是 msgspec 冻结结构体，因为这些是 yuullm 产出的数据，需要类型安全。
+- **提供便利函数** -- `system()`, `user()`, `assistant()`, `tool()` 让消息构造一行搞定。
+
 ## Provider 抽象：隔离供应商 API 细节
 
 不同 LLM 供应商的 API 存在显著差异，yuullm 的核心价值之一就是将这些差异隔离在 Provider 内部，对上层暴露统一接口。
@@ -27,11 +36,37 @@ yuullm **不负责埋点**（无 session 概念）。它只关注：把请求发
 
 每个 Provider 实现内部处理所有供应商特有逻辑，对外只暴露统一的 `stream()` 协议。具体来说：
 
+- **消息转换** -- Provider 内部将 `(role, items)` 元组转换为供应商特有的消息格式。
+- **工具转换** -- Provider 接受 `list[dict]` 格式的工具定义（兼容 OpenAI function-calling 格式和裸 dict），内部转换为供应商格式。
 - **流解析** -- Provider 内部将供应商私有的 SSE/streaming 格式映射为标准的 `StreamItem`（Reasoning / ToolCall / Response）。
 - **Usage 提取** -- Provider 在流结束后从供应商响应中提取 usage 信息，统一映射到 `Usage` struct。不同 provider 的字段名差异（如 `prompt_tokens` vs `input_tokens`）在 Provider 内部消化。
 - **上层无感** -- Client 和使用者不需要知道底层是 OpenAI 还是 Anthropic，拿到的都是同一套类型。
 
 ## Key Concepts
+
+### Message
+
+消息是简单的元组：
+
+```python
+Message = tuple[str, list[Item]]  # (role, items)
+Item = str | dict[str, Any]       # 文本 或 结构化内容
+History = list[Message]
+```
+
+role 是字符串：`"system"`, `"user"`, `"assistant"`, `"tool"`。items 是内容列表，可以是纯文本字符串，也可以是 dict（图片、音频、工具调用、工具结果等）。
+
+便利函数：
+
+```python
+import yuullm
+
+yuullm.system("You are helpful.")
+yuullm.user("Hello!")
+yuullm.user("What is this?", {"type": "image_url", "url": "..."})
+yuullm.assistant("Let me search.", {"type": "tool_call", "id": "tc_1", "name": "search", "arguments": '{"q": "test"}'})
+yuullm.tool("tc_1", "Search returned 5 results.")
+```
 
 ### StreamItem
 
@@ -41,13 +76,43 @@ yuullm **不负责埋点**（无 session 概念）。它只关注：把请求发
 - **ToolCall** -- 模型发起的工具调用请求（包含 id, name, arguments）
 - **Response** -- 模型的最终文本回复片段
 
+### Tools
+
+工具定义使用 `list[dict]` -- 原始 json_schema 字典。yuullm 不定义自己的 ToolSpec 类。
+
+直接使用 yuutools 输出：
+
+```python
+import yuutools as yt
+manager = yt.ToolManager([...])
+tools = manager.specs()  # list[dict], OpenAI function-calling 格式
+
+# 直接传给 yuullm
+stream, store = await client.stream(messages, tools=tools)
+```
+
+也可以手写：
+
+```python
+tools = [{
+    "type": "function",
+    "function": {
+        "name": "search",
+        "description": "Search the web",
+        "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
+    }
+}]
+```
+
+Provider 内部负责将 json_schema 格式转换为各供应商的工具格式。
+
 ### Provider
 
 对接一个具体的 LLM 服务（OpenAI, Anthropic, Google, etc.）。每个 Provider 实现统一的 `stream()` 协议，内部负责将供应商私有格式映射到 `StreamItem`，并提取标准化的 `Usage`。
 
 ### Client
 
-面向用户的入口。持有一个 Provider 和一个可选的 `PriceCalculator`，暴露简洁的 `stream()` / `complete()` 方法，并在调用结束后通过 store 返回 `Usage` 和 `Cost`。
+面向用户的入口。持有一个 Provider 和一个可选的 `PriceCalculator`，暴露简洁的 `stream()` 方法，并在调用结束后通过 store 返回 `Usage` 和 `Cost`。
 
 ### Store
 
@@ -143,7 +208,7 @@ genai-prices 内部有丰富的模型匹配逻辑（regex、前缀、模糊匹�
 src/yuullm/
     __init__.py          # public API re-exports
     py.typed
-    types.py             # StreamItem, Reasoning, ToolCall, Response, Usage, Cost, Message 等
+    types.py             # Message (tuple), Item, History, StreamItem, Usage, Cost, helper functions
     client.py            # Client 类 -- 面向用户的统一入口
     provider.py          # Provider 抽象基类
     pricing.py           # PriceCalculator -- 价格计算引擎（三级来源）
@@ -156,8 +221,21 @@ src/yuullm/
 ## Key Types (sketch)
 
 ```python
+from typing import Any
 import msgspec
 
+# -- Messages: 轻量元组，不是类 --
+Item = str | dict[str, Any]
+Message = tuple[str, list[Item]]  # (role, items)
+History = list[Message]
+
+# 便利函数
+def system(content: str) -> Message: ...
+def user(*items: Item) -> Message: ...
+def assistant(*items: Item) -> Message: ...
+def tool(tool_call_id: str, content: str) -> Message: ...
+
+# -- 输出流: msgspec struct --
 class Reasoning(msgspec.Struct, frozen=True):
     text: str
 
@@ -171,6 +249,7 @@ class Response(msgspec.Struct, frozen=True):
 
 StreamItem = Reasoning | ToolCall | Response
 
+# -- Usage & Cost --
 class Usage(msgspec.Struct, frozen=True):
     provider: str
     model: str
@@ -195,7 +274,7 @@ class Cost(msgspec.Struct, frozen=True):
 
 ```python
 from collections.abc import AsyncIterator
-from typing import Protocol
+from typing import Any, Protocol
 
 class Provider(Protocol):
     async def stream(
@@ -203,7 +282,7 @@ class Provider(Protocol):
         messages: list[Message],
         *,
         model: str,
-        tools: list[ToolSpec] | None = None,
+        tools: list[dict[str, Any]] | None = None,
         **kwargs,
     ) -> tuple[AsyncIterator[StreamItem], dict]:
         """
@@ -228,6 +307,7 @@ class YLLMClient:
         self,
         provider: Provider,
         default_model: str,
+        tools: list[dict[str, Any]] | None = None,
         price_calculator: PriceCalculator | None = None,
     ): ...
 
@@ -236,7 +316,7 @@ class YLLMClient:
         messages: list[Message],
         *,
         model: str | None = None,
-        tools: list[ToolSpec] | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> tuple[AsyncIterator[StreamItem], dict]:
         """
         Delegates to provider.stream(), then enriches store with Cost.
@@ -275,6 +355,7 @@ class PriceCalculator:
 ```python
 import yuullm
 
+# --- 创建客户端 ---
 client = yuullm.YLLMClient(
     provider=yuullm.providers.OpenAIProvider(api_key="sk-..."),
     default_model="gpt-4o",
@@ -283,11 +364,13 @@ client = yuullm.YLLMClient(
     ),
 )
 
+# --- 构造消息（纯函数调用，无需类名） ---
 messages = [
-    yuullm.SystemMessage(content="You are a helpful assistant."),
-    yuullm.UserMessage(content="What is 2+2?"),
+    yuullm.system("You are a helpful assistant."),
+    yuullm.user("What is 2+2?"),
 ]
 
+# --- 流式调用 ---
 stream, store = await client.stream(messages)
 async for item in stream:
     match item:
@@ -298,7 +381,7 @@ async for item in stream:
         case yuullm.ToolCall() as tc:
             print(f"[tool_call] {tc.name}({tc.arguments})")
 
-# After stream ends, usage and cost are available
+# --- 流结束后获取 usage/cost ---
 usage: yuullm.Usage = store["usage"]
 cost: yuullm.Cost | None = store["cost"]
 
@@ -309,13 +392,39 @@ else:
     print("Cost: unavailable (model price not found)")
 ```
 
+### 多模态示例
+
+```python
+messages = [
+    yuullm.system("You are a vision assistant."),
+    yuullm.user("What is in this image?", {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}),
+]
+```
+
+### 与 yuutools 集成
+
+```python
+import yuutools as yt
+import yuullm
+
+# yuutools 定义工具
+manager = yt.ToolManager([search_tool, calculator_tool])
+
+# 直接传给 yuullm，无需任何转换
+tools = manager.specs()  # list[dict]
+stream, store = await client.stream(messages, tools=tools)
+```
+
 ## Design Decisions
 
 1. **无 session / 无状态** -- yuullm 不维护对话历史，history 由上层（yuuagents）管理。
-2. **msgspec structs** -- 所有数据类型使用 `msgspec.Struct`，零拷贝序列化，与项目其他部分保持一致。
-3. **store dict 模式** -- 流式场景下 usage/cost 只有在流结束后才可用；通过传入可变 dict 收集，避免回调或 sentinel 值。
-4. **Provider 可扩展** -- 新增 provider 只需实现 `stream()` 协议，无需注册表或插件系统。
-5. **Provider 负责隔离 API 细节** -- 不同供应商的响应结构、思考格式、工具调用协议、usage 字段等差异全部在 Provider 内部消化，上层看到的永远是统一的 StreamItem + Usage。
-6. **三级价格来源** -- 供应商自带 > YAML 配置 > genai-prices 回退。优先使用最准确的来源，逐级降级。
-7. **Cost 可为 None** -- 价格计算是尽力而为。找不到价格时 cost 为 None，不阻塞业务流程。
-8. **YAML 只覆盖简单场景** -- 有意不支持 tiered pricing、时段定价等复杂特性，在复杂度与抽象简洁度之间取 trade-off。复杂定价建议直接使用供应商自带费用或 genai-prices 库。
+2. **消息是元组，不是类** -- `Message = (role, items)` 避免引入 SystemMessage/UserMessage/AssistantMessage 等重量级抽象。用户不需要记忆和导入一堆类名。便利函数 `system()`, `user()`, `assistant()`, `tool()` 提供人体工学。
+3. **工具是 dict，不是 ToolSpec** -- yuullm 不定义自己的工具规格类型。直接接受 `list[dict]`（json_schema 格式），与 yuutools 的输出无缝对接但不产生包依赖。Provider 内部负责格式转换。
+4. **支持多模态** -- Item 是 `str | dict`，dict 可以承载任意结构化内容（图片、音频等）。Provider 决定如何处理。
+5. **msgspec structs 用于输出** -- StreamItem (Reasoning/ToolCall/Response) 和 Usage/Cost 使用 `msgspec.Struct`，因为这些是 yuullm 产出的类型安全数据。
+6. **store dict 模式** -- 流式场景下 usage/cost 只有在流结束后才可用；通过传入可变 dict 收集，避免回调或 sentinel 值。
+7. **Provider 可扩展** -- 新增 provider 只需实现 `stream()` 协议，无需注册表或插件系统。
+8. **Provider 负责隔离 API 细节** -- 不同供应商的响应结构、思考格式、工具调用协议、usage 字段等差异全部在 Provider 内部消化，上层看到的永远是统一的 StreamItem + Usage。
+9. **三级价格来源** -- 供应商自带 > YAML 配置 > genai-prices 回退。优先使用最准确的来源，逐级降级。
+10. **Cost 可为 None** -- 价格计算是尽力而为。找不到价格时 cost 为 None，不阻塞业务流程。
+11. **YAML 只覆盖简单场景** -- 有意不支持 tiered pricing、时段定价等复杂特性，在复杂度与抽象简洁度之间取 trade-off。复杂定价建议直接使用供应商自带费用或 genai-prices 库。

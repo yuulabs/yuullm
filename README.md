@@ -11,6 +11,15 @@ yuullm provides a standardised streaming abstraction layer over different LLM pr
 
 yuullm is **stateless** — it has no session concept and does not maintain conversation history.
 
+### Design Philosophy
+
+yuullm intentionally avoids heavy abstractions:
+
+- **Messages are tuples**, not classes. `("role", [items])` — no `SystemMessage`, `UserMessage` imports needed.
+- **Tools are dicts**, not a custom `ToolSpec`. Pass `list[dict]` directly — works seamlessly with `yuutools.ToolManager.specs()`, but with zero dependency.
+- **Helper functions** `system()`, `user()`, `assistant()`, `tool()` for ergonomic one-liner message construction.
+- **Multimodal native** — `Item = str | dict`, so images, audio, and structured content are first-class.
+
 ## Installation
 
 ```bash
@@ -19,7 +28,7 @@ pip install yuullm
 
 ## Quick Start
 
-### Basic Chat
+### Basic Chat (with helpers)
 
 ```python
 import yuullm
@@ -30,8 +39,8 @@ client = yuullm.YLLMClient(
 )
 
 messages = [
-    yuullm.SystemMessage(content="You are a helpful assistant."),
-    yuullm.UserMessage(content="What is 2+2?"),
+    yuullm.system("You are a helpful assistant."),
+    yuullm.user("What is 2+2?"),
 ]
 
 stream, store = await client.stream(messages)
@@ -47,24 +56,75 @@ usage = store["usage"]
 print(f"\nTokens: {usage.input_tokens} in / {usage.output_tokens} out")
 ```
 
-### Tool Calling
+### Basic Chat (raw tuples)
 
-Tools are defined using JSON Schema (OpenAI format) and passed at client init time:
+Messages are just `(role, items)` tuples — no imports needed beyond `yuullm`:
 
 ```python
-tools = [
-    yuullm.ToolSpec(
-        name="get_weather",
-        description="Get current weather for a city",
-        parameters={
+import yuullm
+
+client = yuullm.YLLMClient(
+    provider=yuullm.providers.OpenAIProvider(api_key="sk-..."),
+    default_model="gpt-4o",
+)
+
+messages = [
+    ("system", ["You are a helpful assistant."]),
+    ("user", ["What is 2+2?"]),
+]
+
+stream, store = await client.stream(messages)
+async for item in stream:
+    match item:
+        case yuullm.Reasoning(text=t):
+            print(f"[thinking] {t}", end="")
+        case yuullm.Response(text=t):
+            print(t, end="")
+```
+
+### Multimodal (with helpers)
+
+```python
+messages = [
+    yuullm.system("You are a vision assistant."),
+    yuullm.user("What is in this image?", {
+        "type": "image_url",
+        "image_url": {"url": "https://example.com/photo.png"},
+    }),
+]
+```
+
+### Multimodal (raw tuples)
+
+```python
+messages = [
+    ("system", ["You are a vision assistant."]),
+    ("user", [
+        "What is in this image?",
+        {"type": "image_url", "image_url": {"url": "https://example.com/photo.png"}},
+    ]),
+]
+```
+
+### Tool Calling (with helpers)
+
+Tools are plain `list[dict]` — pass json_schema dicts directly:
+
+```python
+tools = [{
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Get current weather for a city",
+        "parameters": {
             "type": "object",
             "properties": {
                 "city": {"type": "string", "description": "City name"},
             },
             "required": ["city"],
         },
-    ),
-]
+    },
+}]
 
 client = yuullm.YLLMClient(
     provider=yuullm.providers.OpenAIProvider(api_key="sk-..."),
@@ -72,34 +132,44 @@ client = yuullm.YLLMClient(
     tools=tools,
 )
 
-messages = [yuullm.UserMessage(content="What's the weather in Tokyo?")]
+messages = [yuullm.user("What's the weather in Tokyo?")]
 stream, store = await client.stream(messages)
 
 async for item in stream:
     match item:
         case yuullm.ToolCall(id=tid, name=name, arguments=args):
             print(f"Tool call: {name}({args})")
-            # Execute the tool, then continue the conversation:
-            # messages.append(yuullm.AssistantMessage(tool_calls=[item]))
-            # messages.append(yuullm.ToolResultMessage(tool_call_id=tid, content='{"temp": 22}'))
         case yuullm.Response(text=t):
             print(t, end="")
 ```
 
-You can also override tools per-request:
+Or override tools per-request:
 
 ```python
 stream, store = await client.stream(messages, tools=other_tools)
 ```
 
-### Multi-turn Conversation
+### Integration with yuutools
+
+```python
+import yuutools as yt
+import yuullm
+
+manager = yt.ToolManager([search_tool, calculator_tool])
+
+# manager.specs() returns list[dict] in OpenAI function-calling format
+# pass directly to yuullm — no conversion needed
+stream, store = await client.stream(messages, tools=manager.specs())
+```
+
+### Multi-turn Conversation (with helpers)
 
 yuullm is stateless — you manage the message list yourself:
 
 ```python
 messages = [
-    yuullm.SystemMessage(content="You are a helpful assistant."),
-    yuullm.UserMessage(content="Hi, my name is Alice."),
+    yuullm.system("You are a helpful assistant."),
+    yuullm.user("Hi, my name is Alice."),
 ]
 
 # First turn
@@ -110,8 +180,8 @@ async for item in stream:
         reply += item.text
 
 # Append assistant reply and next user message
-messages.append(yuullm.AssistantMessage(content=reply))
-messages.append(yuullm.UserMessage(content="What's my name?"))
+messages.append(yuullm.assistant(reply))
+messages.append(yuullm.user("What's my name?"))
 
 # Second turn
 stream, store = await client.stream(messages)
@@ -120,14 +190,40 @@ async for item in stream:
         print(item.text, end="")
 ```
 
-### Tool Call Round-trip
+### Multi-turn Conversation (raw tuples)
+
+```python
+messages = [
+    ("system", ["You are a helpful assistant."]),
+    ("user", ["Hi, my name is Alice."]),
+]
+
+# First turn
+stream, store = await client.stream(messages)
+reply = ""
+async for item in stream:
+    if isinstance(item, yuullm.Response):
+        reply += item.text
+
+# Append assistant reply and next user message
+messages.append(("assistant", [reply]))
+messages.append(("user", ["What's my name?"]))
+
+# Second turn
+stream, store = await client.stream(messages)
+async for item in stream:
+    if isinstance(item, yuullm.Response):
+        print(item.text, end="")
+```
+
+### Tool Call Round-trip (with helpers)
 
 A full tool-use loop: model calls a tool, you execute it, then feed the result back:
 
 ```python
 import json
 
-messages = [yuullm.UserMessage(content="What's the weather in Paris?")]
+messages = [yuullm.user("What's the weather in Paris?")]
 
 stream, store = await client.stream(messages)
 tool_calls = []
@@ -139,18 +235,55 @@ async for item in stream:
             print(t, end="")
 
 if tool_calls:
-    # Append the assistant message with tool calls
-    messages.append(yuullm.AssistantMessage(tool_calls=tool_calls))
+    # Append assistant message with tool calls as dicts
+    messages.append(yuullm.assistant(
+        *[{"type": "tool_call", "id": tc.id, "name": tc.name, "arguments": tc.arguments}
+          for tc in tool_calls]
+    ))
 
     # Execute each tool and append results
     for tc in tool_calls:
         result = execute_tool(tc.name, json.loads(tc.arguments))  # your function
-        messages.append(yuullm.ToolResultMessage(
-            tool_call_id=tc.id,
-            content=json.dumps(result),
-        ))
+        messages.append(yuullm.tool(tc.id, json.dumps(result)))
 
-    # Continue the conversation — model will use the tool results
+    # Continue the conversation
+    stream, store = await client.stream(messages)
+    async for item in stream:
+        if isinstance(item, yuullm.Response):
+            print(item.text, end="")
+```
+
+### Tool Call Round-trip (raw tuples)
+
+```python
+import json
+
+messages = [("user", ["What's the weather in Paris?"])]
+
+stream, store = await client.stream(messages)
+tool_calls = []
+async for item in stream:
+    match item:
+        case yuullm.ToolCall() as tc:
+            tool_calls.append(tc)
+        case yuullm.Response(text=t):
+            print(t, end="")
+
+if tool_calls:
+    # Append assistant message with tool call dicts
+    messages.append(("assistant", [
+        {"type": "tool_call", "id": tc.id, "name": tc.name, "arguments": tc.arguments}
+        for tc in tool_calls
+    ]))
+
+    # Execute each tool and append results
+    for tc in tool_calls:
+        result = execute_tool(tc.name, json.loads(tc.arguments))
+        messages.append(("tool", [
+            {"type": "tool_result", "tool_call_id": tc.id, "content": json.dumps(result)}
+        ]))
+
+    # Continue the conversation
     stream, store = await client.stream(messages)
     async for item in stream:
         if isinstance(item, yuullm.Response):
@@ -249,9 +382,9 @@ Matching is exact on `(provider, model_id)`. No fuzzy matching.
 
 ```python
 YLLMClient(
-    provider: Provider,          # LLM provider instance
-    default_model: str,          # default model name
-    tools: list[ToolSpec] | None = None,           # tool definitions (JSON Schema)
+    provider: Provider,
+    default_model: str,
+    tools: list[dict] | None = None,              # json_schema tool dicts
     price_calculator: PriceCalculator | None = None,
 )
 ```
@@ -260,6 +393,35 @@ YLLMClient(
 
 Returns `(AsyncIterator[StreamItem], store)`. The `model` and `tools` params override the defaults set at init.
 
+### Messages
+
+```python
+Message = tuple[str, list[Item]]  # (role, items)
+Item = str | dict[str, Any]       # text or structured content
+History = list[Message]
+```
+
+Helper functions:
+
+| Function | Signature | Example |
+|----------|-----------|---------|
+| `system` | `system(content: str)` | `system("You are helpful.")` |
+| `user` | `user(*items: Item)` | `user("Hello!")` / `user("Look:", {"type": "image_url", ...})` |
+| `assistant` | `assistant(*items: Item)` | `assistant("Sure!", {"type": "tool_call", ...})` |
+| `tool` | `tool(tool_call_id: str, content: str)` | `tool("tc_1", '{"result": 42}')` |
+
+Tool call items in assistant messages use this dict shape:
+
+```python
+{"type": "tool_call", "id": "...", "name": "...", "arguments": "..."}
+```
+
+Tool result items in tool messages use this dict shape:
+
+```python
+{"type": "tool_result", "tool_call_id": "...", "content": "..."}
+```
+
 ### Stream Items
 
 | Type | Fields | Description |
@@ -267,15 +429,6 @@ Returns `(AsyncIterator[StreamItem], store)`. The `model` and `tools` params ove
 | `Reasoning` | `text: str` | Chain-of-thought / extended thinking fragment |
 | `ToolCall` | `id: str`, `name: str`, `arguments: str` | Tool invocation request (`arguments` is raw JSON) |
 | `Response` | `text: str` | Final text reply fragment |
-
-### Messages
-
-| Type | Fields |
-|------|--------|
-| `SystemMessage` | `content: str` |
-| `UserMessage` | `content: str` |
-| `AssistantMessage` | `content: str \| None`, `tool_calls: list[ToolCall] \| None` |
-| `ToolResultMessage` | `tool_call_id: str`, `content: str` |
 
 ### Usage
 

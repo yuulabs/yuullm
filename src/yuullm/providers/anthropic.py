@@ -4,22 +4,18 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 import anthropic
 
 from ..types import (
-    AssistantMessage,
     Message,
     Reasoning,
     Response,
     StreamItem,
     StreamResult,
-    SystemMessage,
     ToolCall,
-    ToolResultMessage,
-    ToolSpec,
     Usage,
-    UserMessage,
 )
 
 
@@ -46,64 +42,120 @@ class AnthropicProvider:
         return self._provider_name
 
     # ------------------------------------------------------------------
-    # Message conversion
+    # Message conversion: (role, items) tuples -> Anthropic API format
     # ------------------------------------------------------------------
 
     @staticmethod
     def _extract_system(messages: list[Message]) -> tuple[str | None, list[Message]]:
-        """Separate the system message (Anthropic uses a top-level param)."""
+        """Separate system messages (Anthropic uses a top-level param)."""
         system_text: str | None = None
         rest: list[Message] = []
-        for msg in messages:
-            if isinstance(msg, SystemMessage):
-                system_text = msg.content
+        for role, items in messages:
+            if role == "system":
+                # Concatenate text items from system messages
+                text = " ".join(it for it in items if isinstance(it, str))
+                system_text = text
             else:
-                rest.append(msg)
+                rest.append((role, items))
         return system_text, rest
 
     @staticmethod
     def _convert_messages(messages: list[Message]) -> list[dict]:
+        """Convert (role, items) tuples to Anthropic messages format.
+
+        Handles:
+        - ("user", ["text"]) -> {"role": "user", "content": "text"}
+        - ("user", ["text", {"type": "image", ...}]) -> multimodal content blocks
+        - ("assistant", ["text", {"type": "tool_call", ...}]) -> content blocks
+        - ("tool", [{"type": "tool_result", ...}]) -> tool_result content blocks
+        """
         result: list[dict] = []
-        for msg in messages:
-            match msg:
-                case UserMessage(content=c):
-                    result.append({"role": "user", "content": c})
-                case AssistantMessage(content=c, tool_calls=tcs):
-                    content_blocks: list[dict] = []
-                    if c is not None:
-                        content_blocks.append({"type": "text", "text": c})
-                    if tcs:
-                        for tc in tcs:
-                            content_blocks.append({
+        for role, items in messages:
+            if role == "user":
+                # If all items are plain strings, use simple content
+                if all(isinstance(it, str) for it in items):
+                    result.append(
+                        {
+                            "role": "user",
+                            "content": " ".join(
+                                it for it in items if isinstance(it, str)
+                            ),
+                        }
+                    )
+                else:
+                    content: list[dict] = []
+                    for it in items:
+                        if isinstance(it, str):
+                            content.append({"type": "text", "text": it})
+                        else:
+                            content.append(it)
+                    result.append({"role": "user", "content": content})
+
+            elif role == "assistant":
+                content_blocks: list[dict] = []
+                for it in items:
+                    if isinstance(it, str):
+                        content_blocks.append({"type": "text", "text": it})
+                    elif isinstance(it, dict) and it.get("type") == "tool_call":
+                        args = it.get("arguments", "{}")
+                        content_blocks.append(
+                            {
                                 "type": "tool_use",
-                                "id": tc.id,
-                                "name": tc.name,
-                                "input": json.loads(tc.arguments) if tc.arguments else {},
-                            })
-                    result.append({"role": "assistant", "content": content_blocks})
-                case ToolResultMessage(tool_call_id=tid, content=c):
-                    result.append({
-                        "role": "user",
-                        "content": [
+                                "id": it["id"],
+                                "name": it["name"],
+                                "input": json.loads(args)
+                                if isinstance(args, str)
+                                else args,
+                            }
+                        )
+                result.append({"role": "assistant", "content": content_blocks})
+
+            elif role == "tool":
+                # Anthropic expects tool results as user messages with tool_result blocks
+                tool_results: list[dict] = []
+                for it in items:
+                    if isinstance(it, dict) and it.get("type") == "tool_result":
+                        tool_results.append(
                             {
                                 "type": "tool_result",
-                                "tool_use_id": tid,
-                                "content": c,
+                                "tool_use_id": it["tool_call_id"],
+                                "content": it.get("content", ""),
                             }
-                        ],
-                    })
+                        )
+                if tool_results:
+                    result.append({"role": "user", "content": tool_results})
+
         return result
 
     @staticmethod
-    def _convert_tools(tools: list[ToolSpec]) -> list[dict]:
-        return [
-            {
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.parameters,
-            }
-            for t in tools
-        ]
+    def _convert_tools(tools: list[dict[str, Any]]) -> list[dict]:
+        """Convert json_schema tool dicts to Anthropic format.
+
+        Accepts dicts in OpenAI format (``{"type": "function", "function": {...}}``)
+        or bare function dicts (``{"name": ..., ...}``).
+        """
+        result: list[dict] = []
+        for t in tools:
+            if t.get("type") == "function":
+                # OpenAI format (e.g. from yuutools.ToolManager.specs())
+                fn = t["function"]
+                result.append(
+                    {
+                        "name": fn["name"],
+                        "description": fn.get("description", ""),
+                        "input_schema": fn.get("parameters", {}),
+                    }
+                )
+            else:
+                # Bare dict
+                result.append(
+                    {
+                        "name": t["name"],
+                        "description": t.get("description", ""),
+                        "input_schema": t.get("parameters", {}),
+                    }
+                )
+        return result
 
     # ------------------------------------------------------------------
     # Streaming
@@ -114,7 +166,7 @@ class AnthropicProvider:
         messages: list[Message],
         *,
         model: str,
-        tools: list[ToolSpec] | None = None,
+        tools: list[dict[str, Any]] | None = None,
         **kwargs,
     ) -> StreamResult:
         store: dict = {}
@@ -173,7 +225,9 @@ class AnthropicProvider:
                                 yield Response(text=delta.text)
                             case "input_json_delta":
                                 if current_block_index in tool_calls_acc:
-                                    tool_calls_acc[current_block_index]["arguments"] += delta.partial_json
+                                    tool_calls_acc[current_block_index][
+                                        "arguments"
+                                    ] += delta.partial_json
                     case "content_block_stop":
                         if current_block_index in tool_calls_acc:
                             acc = tool_calls_acc.pop(current_block_index)
@@ -194,7 +248,11 @@ class AnthropicProvider:
             request_id=request_id,
             input_tokens=final_message.usage.input_tokens,
             output_tokens=final_message.usage.output_tokens,
-            cache_read_tokens=getattr(final_message.usage, "cache_read_input_tokens", 0) or 0,
-            cache_write_tokens=getattr(final_message.usage, "cache_creation_input_tokens", 0) or 0,
+            cache_read_tokens=getattr(final_message.usage, "cache_read_input_tokens", 0)
+            or 0,
+            cache_write_tokens=getattr(
+                final_message.usage, "cache_creation_input_tokens", 0
+            )
+            or 0,
         )
         store.setdefault("provider_cost", None)

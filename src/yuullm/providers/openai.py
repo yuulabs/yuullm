@@ -4,22 +4,18 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 import openai
 
 from ..types import (
-    AssistantMessage,
     Message,
     Reasoning,
     Response,
     StreamItem,
     StreamResult,
-    SystemMessage,
     ToolCall,
-    ToolResultMessage,
-    ToolSpec,
     Usage,
-    UserMessage,
 )
 
 
@@ -46,56 +42,110 @@ class OpenAIProvider:
         return self._provider_name
 
     # ------------------------------------------------------------------
-    # Message conversion
+    # Message conversion: (role, items) tuples -> OpenAI API format
     # ------------------------------------------------------------------
 
     @staticmethod
     def _convert_messages(messages: list[Message]) -> list[dict]:
+        """Convert (role, items) tuples to OpenAI chat format.
+
+        Handles:
+        - ("system", ["text"]) -> {"role": "system", "content": "text"}
+        - ("user", ["text"]) -> {"role": "user", "content": "text"}
+        - ("user", ["text", {"type": "image_url", ...}]) -> multimodal content array
+        - ("assistant", ["text", {"type": "tool_call", ...}]) -> assistant with tool_calls
+        - ("tool", [{"type": "tool_result", ...}]) -> tool result messages
+        """
         result: list[dict] = []
-        for msg in messages:
-            match msg:
-                case SystemMessage(content=c):
-                    result.append({"role": "system", "content": c})
-                case UserMessage(content=c):
-                    result.append({"role": "user", "content": c})
-                case AssistantMessage(content=c, tool_calls=tcs):
-                    entry: dict = {"role": "assistant"}
-                    if c is not None:
-                        entry["content"] = c
-                    if tcs:
-                        entry["tool_calls"] = [
+        for role, items in messages:
+            if role == "system":
+                # System messages: concatenate text items
+                text = " ".join(it for it in items if isinstance(it, str))
+                result.append({"role": "system", "content": text})
+
+            elif role == "user":
+                # If all items are plain strings, use simple content
+                if all(isinstance(it, str) for it in items):
+                    result.append(
+                        {
+                            "role": "user",
+                            "content": " ".join(
+                                it for it in items if isinstance(it, str)
+                            ),
+                        }
+                    )
+                else:
+                    # Multimodal: build content array
+                    content: list[dict] = []
+                    for it in items:
+                        if isinstance(it, str):
+                            content.append({"type": "text", "text": it})
+                        else:
+                            content.append(it)
+                    result.append({"role": "user", "content": content})
+
+            elif role == "assistant":
+                entry: dict[str, Any] = {"role": "assistant"}
+                text_parts: list[str] = []
+                tool_calls: list[dict] = []
+                for it in items:
+                    if isinstance(it, str):
+                        text_parts.append(it)
+                    elif isinstance(it, dict) and it.get("type") == "tool_call":
+                        tool_calls.append(
                             {
-                                "id": tc.id,
+                                "id": it["id"],
                                 "type": "function",
                                 "function": {
-                                    "name": tc.name,
-                                    "arguments": tc.arguments,
+                                    "name": it["name"],
+                                    "arguments": it.get("arguments", "{}"),
                                 },
                             }
-                            for tc in tcs
-                        ]
-                    result.append(entry)
-                case ToolResultMessage(tool_call_id=tid, content=c):
-                    result.append({
-                        "role": "tool",
-                        "tool_call_id": tid,
-                        "content": c,
-                    })
+                        )
+                if text_parts:
+                    entry["content"] = " ".join(text_parts)
+                if tool_calls:
+                    entry["tool_calls"] = tool_calls
+                result.append(entry)
+
+            elif role == "tool":
+                for it in items:
+                    if isinstance(it, dict) and it.get("type") == "tool_result":
+                        result.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": it["tool_call_id"],
+                                "content": it.get("content", ""),
+                            }
+                        )
+
         return result
 
     @staticmethod
-    def _convert_tools(tools: list[ToolSpec]) -> list[dict]:
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                },
-            }
-            for t in tools
-        ]
+    def _convert_tools(tools: list[dict[str, Any]]) -> list[dict]:
+        """Convert json_schema tool dicts to OpenAI format.
+
+        Accepts dicts already in OpenAI format (``{"type": "function", ...}``),
+        or bare function dicts (``{"name": ..., "description": ..., "parameters": ...}``).
+        """
+        result: list[dict] = []
+        for t in tools:
+            if t.get("type") == "function":
+                # Already in OpenAI format (e.g. from yuutools.ToolManager.specs())
+                result.append(t)
+            else:
+                # Bare dict: wrap in OpenAI function format
+                result.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": t["name"],
+                            "description": t.get("description", ""),
+                            "parameters": t.get("parameters", {}),
+                        },
+                    }
+                )
+        return result
 
     # ------------------------------------------------------------------
     # Streaming
@@ -106,7 +156,7 @@ class OpenAIProvider:
         messages: list[Message],
         *,
         model: str,
-        tools: list[ToolSpec] | None = None,
+        tools: list[dict[str, Any]] | None = None,
         **kwargs,
     ) -> StreamResult:
         store: dict = {}
@@ -172,7 +222,9 @@ class OpenAIProvider:
                     delta_dict = delta.model_dump(exclude_none=True)
                 except Exception:
                     delta_dict = {}
-                reasoning_text = delta_dict.get("reasoning_content") or delta_dict.get("reasoning")
+                reasoning_text = delta_dict.get("reasoning_content") or delta_dict.get(
+                    "reasoning"
+                )
             if reasoning_text:
                 yield Reasoning(text=reasoning_text)
 

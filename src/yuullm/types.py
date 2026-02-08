@@ -1,19 +1,21 @@
 """Core types for yuullm.
 
-All data types use ``msgspec.Struct`` for zero-copy serialization.
+Lightweight, minimal abstractions. Messages are plain tuples, tools are
+plain dicts.  Only output stream types and usage/cost use msgspec structs.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Literal
+from typing import Any
 
 import msgspec
 
 
 # ---------------------------------------------------------------------------
-# StreamItem variants
+# StreamItem variants (output types -- what the model produces)
 # ---------------------------------------------------------------------------
+
 
 class Reasoning(msgspec.Struct, frozen=True):
     """A fragment of the model's chain-of-thought / extended thinking."""
@@ -39,61 +41,76 @@ StreamItem = Reasoning | ToolCall | Response
 
 
 # ---------------------------------------------------------------------------
-# Message types
+# Message types -- lightweight tuple-based
 # ---------------------------------------------------------------------------
 
-class SystemMessage(msgspec.Struct, frozen=True):
-    """System-level instruction."""
+# A content item in a message: plain text or structured dict
+# (images, audio, tool_calls, tool_results, etc.)
+Item = str | dict[str, Any]
 
-    content: str
-    role: Literal["system"] = "system"
+# Message = (role, items)
+# role: "system" | "user" | "assistant" | "tool"
+# items: list of content items
+Message = tuple[str, list[Item]]
 
-
-class UserMessage(msgspec.Struct, frozen=True):
-    """User turn."""
-
-    content: str
-    role: Literal["user"] = "user"
-
-
-class AssistantMessage(msgspec.Struct, frozen=True):
-    """Assistant turn (may include tool calls)."""
-
-    content: str | None = None
-    tool_calls: list[ToolCall] | None = None
-    role: Literal["assistant"] = "assistant"
-
-
-class ToolResultMessage(msgspec.Struct, frozen=True):
-    """Result returned from a tool execution."""
-
-    tool_call_id: str
-    content: str
-    role: Literal["tool"] = "tool"
-
-
-Message = SystemMessage | UserMessage | AssistantMessage | ToolResultMessage
+# History is just a list of messages
+History = list[Message]
 
 
 # ---------------------------------------------------------------------------
-# Tool specification
+# Helper functions for constructing messages
 # ---------------------------------------------------------------------------
 
-class ToolSpec(msgspec.Struct, frozen=True):
-    """Describes a tool the model may call.
 
-    ``parameters`` should be a JSON-Schema dict describing the function
-    parameters.
+def system(content: str) -> Message:
+    """Create a system message."""
+    return ("system", [content])
+
+
+def user(*items: Item) -> Message:
+    """Create a user message with one or more content items.
+
+    Examples::
+
+        user("Hello!")
+        user("What is this?", {"type": "image_url", "url": "..."})
     """
+    return ("user", list(items))
 
-    name: str
-    description: str
-    parameters: dict  # JSON Schema object
+
+def assistant(*items: Item) -> Message:
+    """Create an assistant message.
+
+    Examples::
+
+        assistant("Here is the answer.")
+        assistant("Let me search.", {
+            "type": "tool_call",
+            "id": "tc_1",
+            "name": "search",
+            "arguments": '{"q": "test"}'
+        })
+    """
+    return ("assistant", list(items))
+
+
+def tool(tool_call_id: str, content: str) -> Message:
+    """Create a tool result message.
+
+    Example::
+
+        tool("tc_1", "Search returned 5 results.")
+    """
+    return (
+        "tool",
+        [{"type": "tool_result", "tool_call_id": tool_call_id, "content": content}],
+    )
 
 
 # ---------------------------------------------------------------------------
 # Usage & Cost
 # ---------------------------------------------------------------------------
+
 
 class Usage(msgspec.Struct, frozen=True):
     """Token usage reported by the API."""
