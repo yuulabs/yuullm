@@ -10,6 +10,13 @@ from .types import Message, StreamResult
 class Provider(Protocol):
     """Unified interface for LLM providers.
 
+    Each provider combines two orthogonal concepts:
+
+    - **api_type**: the wire protocol used (e.g. ``"openai-chat-completion"``,
+      ``"openai-responses"``, ``"anthropic-messages"``).
+    - **provider**: the vendor / supplier name (e.g. ``"openai"``,
+      ``"deepseek"``, ``"openrouter"``, ``"anthropic"``).
+
     Implementors must supply :meth:`stream` which returns an async iterator
     of :class:`StreamItem` together with a mutable *store* dict.  After the
     iterator is exhausted the store will contain at least ``"usage"``
@@ -22,8 +29,17 @@ class Provider(Protocol):
     """
 
     @property
-    def name(self) -> str:
-        """Short identifier for this provider (e.g. ``"openai"``)."""
+    def api_type(self) -> str:
+        """Wire protocol identifier.
+
+        One of ``"openai-chat-completion"``, ``"openai-responses"``,
+        ``"anthropic-messages"``.
+        """
+        ...
+
+    @property
+    def provider(self) -> str:
+        """Vendor / supplier name (e.g. ``"openai"``, ``"deepseek"``)."""
         ...
 
     async def stream(

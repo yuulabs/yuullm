@@ -1,4 +1,7 @@
-"""Anthropic provider implementation."""
+"""Anthropic Messages API provider implementation.
+
+This provider uses the Anthropic ``/v1/messages`` endpoint with streaming.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +12,7 @@ from typing import Any
 import anthropic
 
 from ..types import (
+    Item,
     Message,
     Reasoning,
     Response,
@@ -19,8 +23,19 @@ from ..types import (
 )
 
 
-class AnthropicProvider:
-    """Provider for the Anthropic Messages API."""
+class AnthropicMessagesProvider:
+    """Provider for the Anthropic Messages API (``/v1/messages``).
+
+    Parameters
+    ----------
+    api_key : str | None
+        API key.  Falls back to ``ANTHROPIC_API_KEY`` env var.
+    base_url : str | None
+        Override the base URL (e.g. for a proxy).
+    provider_name : str
+        Vendor / supplier identifier used in :class:`Usage` and pricing
+        lookups.  Defaults to ``"anthropic"``.
+    """
 
     def __init__(
         self,
@@ -38,7 +53,11 @@ class AnthropicProvider:
         self._provider_name = provider_name
 
     @property
-    def name(self) -> str:
+    def api_type(self) -> str:
+        return "anthropic-messages"
+
+    @property
+    def provider(self) -> str:
         return self._provider_name
 
     # ------------------------------------------------------------------
@@ -256,3 +275,7 @@ class AnthropicProvider:
             or 0,
         )
         store.setdefault("provider_cost", None)
+
+
+# Backward-compatible alias (deprecated)
+AnthropicProvider = AnthropicMessagesProvider

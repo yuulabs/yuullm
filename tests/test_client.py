@@ -7,10 +7,12 @@ import pytest
 
 from yuullm import (
     Cost,
+    ImageItem,
     PriceCalculator,
     Reasoning,
     Response,
     ToolCall,
+    ToolCallItem,
     Usage,
     YLLMClient,
     system,
@@ -18,8 +20,8 @@ from yuullm import (
     assistant,
     tool,
 )
-from yuullm.providers.openai import OpenAIProvider
-from yuullm.providers.anthropic import AnthropicProvider
+from yuullm.providers.openai import OpenAIChatCompletionProvider
+from yuullm.providers.anthropic import AnthropicMessagesProvider
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +37,11 @@ class FakeProvider:
         self._usage = usage
 
     @property
-    def name(self) -> str:
+    def api_type(self) -> str:
+        return "fake"
+
+    @property
+    def provider(self) -> str:
         return "fake"
 
     async def stream(self, messages, *, model, tools=None, **kwargs):
@@ -149,30 +155,55 @@ class TestYLLMClient:
 
 
 # ---------------------------------------------------------------------------
+# Provider protocol tests
+# ---------------------------------------------------------------------------
+
+
+class TestProviderProtocol:
+    def test_openai_chat_completion_api_type(self):
+        """OpenAIChatCompletionProvider should report correct api_type."""
+        p = OpenAIChatCompletionProvider(api_key="fake")
+        assert p.api_type == "openai-chat-completion"
+        assert p.provider == "openai"
+
+    def test_openai_chat_completion_custom_provider(self):
+        """provider_name should override the vendor name."""
+        p = OpenAIChatCompletionProvider(
+            api_key="fake",
+            base_url="https://api.deepseek.com/v1",
+            provider_name="deepseek",
+        )
+        assert p.api_type == "openai-chat-completion"
+        assert p.provider == "deepseek"
+
+    def test_anthropic_messages_api_type(self):
+        """AnthropicMessagesProvider should report correct api_type."""
+        p = AnthropicMessagesProvider(api_key="fake")
+        assert p.api_type == "anthropic-messages"
+        assert p.provider == "anthropic"
+
+
+# ---------------------------------------------------------------------------
 # OpenAI message conversion tests
 # ---------------------------------------------------------------------------
 
 
 class TestOpenAIMessageConversion:
     def test_system_message(self):
-        msgs = OpenAIProvider._convert_messages([system("Be helpful")])
+        msgs = OpenAIChatCompletionProvider._convert_messages([system("Be helpful")])
         assert msgs == [{"role": "system", "content": "Be helpful"}]
 
     def test_user_message(self):
-        msgs = OpenAIProvider._convert_messages([user("Hi")])
+        msgs = OpenAIChatCompletionProvider._convert_messages([user("Hi")])
         assert msgs == [{"role": "user", "content": "Hi"}]
 
     def test_user_multimodal(self):
-        msgs = OpenAIProvider._convert_messages(
-            [
-                user(
-                    "What is this?",
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": "http://example.com/img.png"},
-                    },
-                )
-            ]
+        img: ImageItem = {
+            "type": "image_url",
+            "image_url": {"url": "http://example.com/img.png"},
+        }
+        msgs = OpenAIChatCompletionProvider._convert_messages(
+            [user("What is this?", img)]
         )
         assert msgs[0]["role"] == "user"
         assert isinstance(msgs[0]["content"], list)
@@ -180,24 +211,29 @@ class TestOpenAIMessageConversion:
         assert msgs[0]["content"][1]["type"] == "image_url"
 
     def test_assistant_message_text(self):
-        msgs = OpenAIProvider._convert_messages([assistant("Hello")])
+        msgs = OpenAIChatCompletionProvider._convert_messages([assistant("Hello")])
         assert msgs == [{"role": "assistant", "content": "Hello"}]
 
     def test_assistant_message_with_tool_calls(self):
-        tc = {"type": "tool_call", "id": "tc_1", "name": "fn", "arguments": '{"a": 1}'}
-        msgs = OpenAIProvider._convert_messages([assistant("ok", tc)])
+        tc: ToolCallItem = {
+            "type": "tool_call",
+            "id": "tc_1",
+            "name": "fn",
+            "arguments": '{"a": 1}',
+        }
+        msgs = OpenAIChatCompletionProvider._convert_messages([assistant("ok", tc)])
         assert len(msgs) == 1
         assert msgs[0]["content"] == "ok"
         assert msgs[0]["tool_calls"][0]["id"] == "tc_1"
         assert msgs[0]["tool_calls"][0]["function"]["name"] == "fn"
 
     def test_tool_result_message(self):
-        msgs = OpenAIProvider._convert_messages([tool("tc_1", "result")])
+        msgs = OpenAIChatCompletionProvider._convert_messages([tool("tc_1", "result")])
         assert msgs == [{"role": "tool", "tool_call_id": "tc_1", "content": "result"}]
 
     def test_tool_spec_conversion_openai_format(self):
         """Tools in OpenAI format (from yuutools) are passed through."""
-        tools = OpenAIProvider._convert_tools(
+        tools = OpenAIChatCompletionProvider._convert_tools(
             [
                 {
                     "type": "function",
@@ -214,7 +250,7 @@ class TestOpenAIMessageConversion:
 
     def test_tool_spec_conversion_bare_dict(self):
         """Bare tool dicts are wrapped in OpenAI format."""
-        tools = OpenAIProvider._convert_tools(
+        tools = OpenAIChatCompletionProvider._convert_tools(
             [
                 {
                     "name": "search",
@@ -235,18 +271,23 @@ class TestOpenAIMessageConversion:
 class TestAnthropicMessageConversion:
     def test_system_extraction(self):
         msgs = [system("Be helpful"), user("Hi")]
-        system_text, rest = AnthropicProvider._extract_system(msgs)
+        system_text, rest = AnthropicMessagesProvider._extract_system(msgs)
         assert system_text == "Be helpful"
         assert len(rest) == 1
         assert rest[0][0] == "user"
 
     def test_user_message(self):
-        msgs = AnthropicProvider._convert_messages([user("Hi")])
+        msgs = AnthropicMessagesProvider._convert_messages([user("Hi")])
         assert msgs == [{"role": "user", "content": "Hi"}]
 
     def test_assistant_with_tool_use(self):
-        tc = {"type": "tool_call", "id": "tc_1", "name": "fn", "arguments": '{"a": 1}'}
-        msgs = AnthropicProvider._convert_messages([assistant("ok", tc)])
+        tc: ToolCallItem = {
+            "type": "tool_call",
+            "id": "tc_1",
+            "name": "fn",
+            "arguments": '{"a": 1}',
+        }
+        msgs = AnthropicMessagesProvider._convert_messages([assistant("ok", tc)])
         assert len(msgs) == 1
         blocks = msgs[0]["content"]
         assert blocks[0]["type"] == "text"
@@ -256,14 +297,14 @@ class TestAnthropicMessageConversion:
         assert blocks[1]["input"] == {"a": 1}
 
     def test_tool_result_message(self):
-        msgs = AnthropicProvider._convert_messages([tool("tc_1", "result")])
+        msgs = AnthropicMessagesProvider._convert_messages([tool("tc_1", "result")])
         assert msgs[0]["role"] == "user"
         assert msgs[0]["content"][0]["type"] == "tool_result"
         assert msgs[0]["content"][0]["tool_use_id"] == "tc_1"
 
     def test_tool_spec_conversion_openai_format(self):
         """Tools in OpenAI format (from yuutools) are converted to Anthropic format."""
-        tools = AnthropicProvider._convert_tools(
+        tools = AnthropicMessagesProvider._convert_tools(
             [
                 {
                     "type": "function",
@@ -280,7 +321,7 @@ class TestAnthropicMessageConversion:
 
     def test_tool_spec_conversion_bare_dict(self):
         """Bare tool dicts are converted to Anthropic format."""
-        tools = AnthropicProvider._convert_tools(
+        tools = AnthropicMessagesProvider._convert_tools(
             [
                 {
                     "name": "search",

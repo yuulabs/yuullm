@@ -1,4 +1,9 @@
-"""OpenAI / OpenAI-compatible provider implementation."""
+"""OpenAI Chat Completion API provider implementation.
+
+This provider uses the ``/v1/chat/completions`` endpoint, which is also
+the wire protocol used by many third-party vendors (DeepSeek, OpenRouter,
+Together, Groq, etc.).
+"""
 
 from __future__ import annotations
 
@@ -9,6 +14,7 @@ from typing import Any
 import openai
 
 from ..types import (
+    Item,
     Message,
     Reasoning,
     Response,
@@ -19,8 +25,25 @@ from ..types import (
 )
 
 
-class OpenAIProvider:
-    """Provider for OpenAI and OpenAI-compatible APIs."""
+class OpenAIChatCompletionProvider:
+    """Provider for the OpenAI Chat Completion API (``/v1/chat/completions``).
+
+    Also works with any vendor that exposes an OpenAI-compatible
+    chat-completion endpoint (DeepSeek, OpenRouter, Together, Groq, …).
+
+    Parameters
+    ----------
+    api_key : str | None
+        API key.  Falls back to ``OPENAI_API_KEY`` env var.
+    base_url : str | None
+        Override the base URL for third-party vendors.
+    organization : str | None
+        OpenAI organization header.
+    provider_name : str
+        Vendor / supplier identifier used in :class:`Usage` and pricing
+        lookups.  Defaults to ``"openai"``; set to ``"deepseek"``,
+        ``"openrouter"``, etc. when using a compatible endpoint.
+    """
 
     def __init__(
         self,
@@ -38,7 +61,11 @@ class OpenAIProvider:
         self._provider_name = provider_name
 
     @property
-    def name(self) -> str:
+    def api_type(self) -> str:
+        return "openai-chat-completion"
+
+    @property
+    def provider(self) -> str:
         return self._provider_name
 
     # ------------------------------------------------------------------
@@ -276,3 +303,7 @@ class OpenAIProvider:
         if details is not None:
             return getattr(details, "cached_tokens", 0) or 0
         return 0
+
+
+# Backward-compatible alias (deprecated)
+OpenAIProvider = OpenAIChatCompletionProvider

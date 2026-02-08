@@ -1,9 +1,13 @@
 """Built-in LLM providers."""
 
-from .anthropic import AnthropicProvider
-from .openai import OpenAIProvider
+from .anthropic import AnthropicMessagesProvider, AnthropicProvider
+from .openai import OpenAIChatCompletionProvider, OpenAIProvider
 
 __all__ = [
-    "AnthropicProvider",
+    # Primary names (api-type based)
+    "OpenAIChatCompletionProvider",
+    "AnthropicMessagesProvider",
+    # Deprecated aliases
     "OpenAIProvider",
+    "AnthropicProvider",
 ]

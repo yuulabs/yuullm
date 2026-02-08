@@ -2,23 +2,89 @@
 
 Lightweight, minimal abstractions. Messages are plain tuples, tools are
 plain dicts.  Only output stream types and usage/cost use msgspec structs.
+Content items use TypedDict for type safety, with structures aligned to
+the OpenAI API format.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal, Required, TypedDict
 
 import msgspec
 
 
 # ---------------------------------------------------------------------------
-# Core content types (shared by messages and stream outputs)
+# Core content types -- TypedDict definitions aligned with OpenAI API
 # ---------------------------------------------------------------------------
 
-# A content item: plain text or structured dict
-# (images, audio, tool_calls, tool_results, etc.)
-Item = str | dict[str, Any]
+
+class ToolCallItem(TypedDict):
+    """A tool invocation embedded in an assistant message."""
+
+    type: Literal["tool_call"]
+    id: str
+    name: str
+    arguments: str  # raw JSON string
+
+
+class ToolResultItem(TypedDict):
+    """A tool execution result embedded in a tool message."""
+
+    type: Literal["tool_result"]
+    tool_call_id: str
+    content: str
+
+
+class TextItem(TypedDict):
+    """A text content block."""
+
+    type: Literal["text"]
+    text: str
+
+
+class _ImageURL(TypedDict, total=False):
+    url: Required[str]
+    detail: Literal["auto", "low", "high"]
+
+
+class ImageItem(TypedDict):
+    """An image content block (URL or base64)."""
+
+    type: Literal["image_url"]
+    image_url: _ImageURL
+
+
+class _InputAudio(TypedDict, total=False):
+    data: Required[str]  # base64 encoded
+    format: Required[Literal["wav", "mp3"]]
+
+
+class AudioItem(TypedDict):
+    """An audio input content block."""
+
+    type: Literal["input_audio"]
+    input_audio: _InputAudio
+
+
+class _FileData(TypedDict, total=False):
+    file_data: str  # base64 encoded
+    file_id: str
+    filename: str
+
+
+class FileItem(TypedDict):
+    """A file content block."""
+
+    type: Literal["file"]
+    file: _FileData
+
+
+# The union of all structured content items.
+DictItem = ToolCallItem | ToolResultItem | TextItem | ImageItem | AudioItem | FileItem
+
+# A content item: plain text string or a typed structured dict.
+Item = str | DictItem
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +147,7 @@ def user(*items: Item) -> Message:
     Examples::
 
         user("Hello!")
-        user("What is this?", {"type": "image_url", "url": "..."})
+        user("What is this?", ImageItem(type="image_url", image_url={"url": "..."}))
     """
     return ("user", list(items))
 
@@ -92,12 +158,12 @@ def assistant(*items: Item) -> Message:
     Examples::
 
         assistant("Here is the answer.")
-        assistant("Let me search.", {
-            "type": "tool_call",
-            "id": "tc_1",
-            "name": "search",
-            "arguments": '{"q": "test"}'
-        })
+        assistant("Let me search.", ToolCallItem(
+            type="tool_call",
+            id="tc_1",
+            name="search",
+            arguments='{"q": "test"}',
+        ))
     """
     return ("assistant", list(items))
 
@@ -109,10 +175,12 @@ def tool(tool_call_id: str, content: str) -> Message:
 
         tool("tc_1", "Search returned 5 results.")
     """
-    return (
-        "tool",
-        [{"type": "tool_result", "tool_call_id": tool_call_id, "content": content}],
-    )
+    result: ToolResultItem = {
+        "type": "tool_result",
+        "tool_call_id": tool_call_id,
+        "content": content,
+    }
+    return ("tool", [result])
 
 
 # ---------------------------------------------------------------------------

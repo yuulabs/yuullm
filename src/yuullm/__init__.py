@@ -16,8 +16,12 @@ from .client import YLLMClient
 from .pricing import PriceCalculator
 from .provider import Provider
 from .types import (
+    AudioItem,
     Cost,
+    DictItem,
+    FileItem,
     History,
+    ImageItem,
     Item,
     Message,
     Reasoning,
@@ -25,7 +29,10 @@ from .types import (
     StreamItem,
     StreamResult,
     Store,
+    TextItem,
     ToolCall,
+    ToolCallItem,
+    ToolResultItem,
     Usage,
     # Helper functions for constructing messages
     assistant,
@@ -51,9 +58,17 @@ __all__ = [
     "StreamItem",
     "StreamResult",
     "Store",
+    # Content item types (TypedDict)
+    "Item",
+    "DictItem",
+    "ToolCallItem",
+    "ToolResultItem",
+    "TextItem",
+    "ImageItem",
+    "AudioItem",
+    "FileItem",
     # Message types & helpers
     "Message",
-    "Item",
     "History",
     "system",
     "user",

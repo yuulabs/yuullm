@@ -3,10 +3,17 @@
 import msgspec
 
 from yuullm import (
+    AudioItem,
     Cost,
+    DictItem,
+    FileItem,
+    ImageItem,
     Reasoning,
     Response,
+    TextItem,
     ToolCall,
+    ToolCallItem,
+    ToolResultItem,
     Usage,
     system,
     user,
@@ -52,9 +59,11 @@ class TestMessages:
         assert m[0] == "user"
 
     def test_user_multimodal(self):
-        m = user(
-            "What is this?", {"type": "image_url", "url": "http://example.com/img.png"}
-        )
+        img: ImageItem = {
+            "type": "image_url",
+            "image_url": {"url": "http://example.com/img.png"},
+        }
+        m = user("What is this?", img)
         assert m[0] == "user"
         assert len(m[1]) == 2
         assert m[1][0] == "What is this?"
@@ -65,7 +74,12 @@ class TestMessages:
         assert m == ("assistant", ["Hello!"])
 
     def test_assistant_message_with_tool_calls(self):
-        tc = {"type": "tool_call", "id": "1", "name": "fn", "arguments": "{}"}
+        tc: ToolCallItem = {
+            "type": "tool_call",
+            "id": "1",
+            "name": "fn",
+            "arguments": "{}",
+        }
         m = assistant("thinking...", tc)
         assert m[0] == "assistant"
         assert len(m[1]) == 2
@@ -135,3 +149,90 @@ class TestSerialization:
         data = msgspec.json.encode(c)
         c2 = msgspec.json.decode(data, type=Cost)
         assert c == c2
+
+
+class TestTypedItems:
+    """Tests for TypedDict-based Item types."""
+
+    def test_tool_call_item(self):
+        tc: ToolCallItem = {
+            "type": "tool_call",
+            "id": "tc_1",
+            "name": "search",
+            "arguments": '{"q": "test"}',
+        }
+        assert tc["type"] == "tool_call"
+        assert tc["id"] == "tc_1"
+        assert tc["name"] == "search"
+        assert tc["arguments"] == '{"q": "test"}'
+        # TypedDict is still a dict at runtime
+        assert isinstance(tc, dict)
+
+    def test_tool_result_item(self):
+        tr: ToolResultItem = {
+            "type": "tool_result",
+            "tool_call_id": "tc_1",
+            "content": "5 results found",
+        }
+        assert tr["type"] == "tool_result"
+        assert tr["tool_call_id"] == "tc_1"
+        assert tr["content"] == "5 results found"
+
+    def test_text_item(self):
+        t: TextItem = {"type": "text", "text": "Hello"}
+        assert t["type"] == "text"
+        assert t["text"] == "Hello"
+
+    def test_image_item(self):
+        img: ImageItem = {
+            "type": "image_url",
+            "image_url": {"url": "https://example.com/img.png"},
+        }
+        assert img["type"] == "image_url"
+        assert img["image_url"]["url"] == "https://example.com/img.png"
+
+    def test_image_item_with_detail(self):
+        img: ImageItem = {
+            "type": "image_url",
+            "image_url": {"url": "https://example.com/img.png", "detail": "high"},
+        }
+        assert img["image_url"]["detail"] == "high"
+
+    def test_audio_item(self):
+        audio: AudioItem = {
+            "type": "input_audio",
+            "input_audio": {"data": "base64data==", "format": "wav"},
+        }
+        assert audio["type"] == "input_audio"
+        assert audio["input_audio"]["data"] == "base64data=="
+        assert audio["input_audio"]["format"] == "wav"
+
+    def test_file_item(self):
+        f: FileItem = {
+            "type": "file",
+            "file": {"file_id": "file-abc123", "filename": "doc.pdf"},
+        }
+        assert f["type"] == "file"
+        assert f["file"]["file_id"] == "file-abc123"
+
+    def test_tool_helper_returns_tool_result_item(self):
+        """The tool() helper should produce a properly typed ToolResultItem."""
+        msg = tool("tc_1", "result")
+        item = msg[1][0]
+        assert item["type"] == "tool_result"
+        assert item["tool_call_id"] == "tc_1"
+        assert item["content"] == "result"
+
+    def test_items_are_dicts_at_runtime(self):
+        """All TypedDict items are plain dicts at runtime — provider isinstance checks work."""
+        items: list[DictItem] = [
+            {"type": "tool_call", "id": "1", "name": "fn", "arguments": "{}"},
+            {"type": "tool_result", "tool_call_id": "1", "content": "ok"},
+            {"type": "text", "text": "hello"},
+            {"type": "image_url", "image_url": {"url": "http://x.com/i.png"}},
+            {"type": "input_audio", "input_audio": {"data": "x", "format": "wav"}},
+            {"type": "file", "file": {"file_id": "f1"}},
+        ]
+        for item in items:
+            assert isinstance(item, dict)
+            assert "type" in item
