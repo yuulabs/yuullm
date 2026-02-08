@@ -1,6 +1,6 @@
 [project]
 name = "yuullm"
-version = "0.2.0"
+version = "0.3.0"
 description = "Unified streaming LLM interface with provider-agnostic reasoning/tool-call abstraction"
 readme = "README.md"
 authors = [
