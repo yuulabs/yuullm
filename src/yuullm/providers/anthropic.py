@@ -220,9 +220,9 @@ class AnthropicProvider:
                         delta = event.delta
                         match delta.type:
                             case "thinking_delta":
-                                yield Reasoning(text=delta.thinking)
+                                yield Reasoning(item=delta.thinking)
                             case "text_delta":
-                                yield Response(text=delta.text)
+                                yield Response(item=delta.text)
                             case "input_json_delta":
                                 if current_block_index in tool_calls_acc:
                                     tool_calls_acc[current_block_index][

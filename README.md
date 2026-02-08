@@ -74,12 +74,14 @@ messages = [
 ]
 
 stream, store = await client.stream(messages)
-async for item in stream:
-    match item:
-        case yuullm.Reasoning(text=t):
-            print(f"[thinking] {t}", end="")
-        case yuullm.Response(text=t):
-            print(t, end="")
+async for stream_item in stream:
+    match stream_item:
+        case yuullm.Reasoning(item=i):
+            if isinstance(i, str):
+                print(f"[thinking] {i}", end="")
+        case yuullm.Response(item=i):
+            if isinstance(i, str):
+                print(i, end="")
 ```
 
 ### Multimodal (with helpers)
@@ -135,12 +137,14 @@ client = yuullm.YLLMClient(
 messages = [yuullm.user("What's the weather in Tokyo?")]
 stream, store = await client.stream(messages)
 
-async for item in stream:
-    match item:
-        case yuullm.ToolCall(id=tid, name=name, arguments=args):
-            print(f"Tool call: {name}({args})")
-        case yuullm.Response(text=t):
-            print(t, end="")
+async for stream_item in stream:
+    match stream_item:
+        case yuullm.Reasoning(item=i):
+            if isinstance(i, str):
+                print(f"[thinking] {i}", end="")
+        case yuullm.Response(item=i):
+            if isinstance(i, str):
+                print(i, end="")
 ```
 
 Or override tools per-request:
@@ -175,9 +179,10 @@ messages = [
 # First turn
 stream, store = await client.stream(messages)
 reply = ""
-async for item in stream:
-    if isinstance(item, yuullm.Response):
-        reply += item.text
+async for stream_item in stream:
+    if isinstance(stream_item, yuullm.Response):
+        if isinstance(stream_item.item, str):
+            reply += stream_item.item
 
 # Append assistant reply and next user message
 messages.append(yuullm.assistant(reply))
@@ -185,9 +190,10 @@ messages.append(yuullm.user("What's my name?"))
 
 # Second turn
 stream, store = await client.stream(messages)
-async for item in stream:
-    if isinstance(item, yuullm.Response):
-        print(item.text, end="")
+async for stream_item in stream:
+    if isinstance(stream_item, yuullm.Response):
+        if isinstance(stream_item.item, str):
+            print(stream_item.item, end="")
 ```
 
 ### Multi-turn Conversation (raw tuples)
@@ -201,9 +207,10 @@ messages = [
 # First turn
 stream, store = await client.stream(messages)
 reply = ""
-async for item in stream:
-    if isinstance(item, yuullm.Response):
-        reply += item.text
+async for stream_item in stream:
+    if isinstance(stream_item, yuullm.Response):
+        if isinstance(stream_item.item, str):
+            reply += stream_item.item
 
 # Append assistant reply and next user message
 messages.append(("assistant", [reply]))
@@ -211,9 +218,10 @@ messages.append(("user", ["What's my name?"]))
 
 # Second turn
 stream, store = await client.stream(messages)
-async for item in stream:
-    if isinstance(item, yuullm.Response):
-        print(item.text, end="")
+async for stream_item in stream:
+    if isinstance(stream_item, yuullm.Response):
+        if isinstance(stream_item.item, str):
+            print(stream_item.item, end="")
 ```
 
 ### Tool Call Round-trip (with helpers)
@@ -227,12 +235,13 @@ messages = [yuullm.user("What's the weather in Paris?")]
 
 stream, store = await client.stream(messages)
 tool_calls = []
-async for item in stream:
-    match item:
+async for stream_item in stream:
+    match stream_item:
         case yuullm.ToolCall() as tc:
             tool_calls.append(tc)
-        case yuullm.Response(text=t):
-            print(t, end="")
+        case yuullm.Response(item=i):
+            if isinstance(i, str):
+                print(i, end="")
 
 if tool_calls:
     # Append assistant message with tool calls as dicts
@@ -248,9 +257,10 @@ if tool_calls:
 
     # Continue the conversation
     stream, store = await client.stream(messages)
-    async for item in stream:
-        if isinstance(item, yuullm.Response):
-            print(item.text, end="")
+    async for stream_item in stream:
+        if isinstance(stream_item, yuullm.Response):
+            if isinstance(stream_item.item, str):
+                print(stream_item.item, end="")
 ```
 
 ### Tool Call Round-trip (raw tuples)
@@ -262,12 +272,13 @@ messages = [("user", ["What's the weather in Paris?"])]
 
 stream, store = await client.stream(messages)
 tool_calls = []
-async for item in stream:
-    match item:
+async for stream_item in stream:
+    match stream_item:
         case yuullm.ToolCall() as tc:
             tool_calls.append(tc)
-        case yuullm.Response(text=t):
-            print(t, end="")
+        case yuullm.Response(item=i):
+            if isinstance(i, str):
+                print(i, end="")
 
 if tool_calls:
     # Append assistant message with tool call dicts
@@ -285,9 +296,10 @@ if tool_calls:
 
     # Continue the conversation
     stream, store = await client.stream(messages)
-    async for item in stream:
-        if isinstance(item, yuullm.Response):
-            print(item.text, end="")
+    async for stream_item in stream:
+        if isinstance(stream_item, yuullm.Response):
+            if isinstance(stream_item.item, str):
+                print(stream_item.item, end="")
 ```
 
 ### Cost Tracking
@@ -426,9 +438,9 @@ Tool result items in tool messages use this dict shape:
 
 | Type | Fields | Description |
 |------|--------|-------------|
-| `Reasoning` | `text: str` | Chain-of-thought / extended thinking fragment |
+| `Reasoning` | `item: Item` | Chain-of-thought / extended thinking fragment (text or multimodal) |
 | `ToolCall` | `id: str`, `name: str`, `arguments: str` | Tool invocation request (`arguments` is raw JSON) |
-| `Response` | `text: str` | Final text reply fragment |
+| `Response` | `item: Item` | Final reply fragment (text or multimodal) |
 
 ### Usage
 

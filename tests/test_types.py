@@ -17,12 +17,12 @@ from yuullm import (
 
 class TestStreamItems:
     def test_reasoning(self):
-        r = Reasoning(text="thinking...")
-        assert r.text == "thinking..."
+        r = Reasoning(item="thinking...")
+        assert r.item == "thinking..."
 
     def test_response(self):
-        r = Response(text="hello")
-        assert r.text == "hello"
+        r = Response(item="hello")
+        assert r.item == "hello"
 
     def test_tool_call(self):
         tc = ToolCall(id="tc_1", name="search", arguments='{"q": "test"}')
@@ -31,9 +31,9 @@ class TestStreamItems:
         assert tc.arguments == '{"q": "test"}'
 
     def test_frozen(self):
-        r = Reasoning(text="x")
+        r = Reasoning(item="x")
         try:
-            r.text = "y"  # type: ignore[misc]
+            r.item = "y"  # type: ignore[misc]
             assert False, "Should be frozen"
         except AttributeError:
             pass

@@ -58,7 +58,7 @@ class FakeProvider:
 class TestYLLMClient:
     @pytest.mark.asyncio
     async def test_stream_basic(self):
-        items = [Response(text="Hello"), Response(text=" world")]
+        items = [Response(item="Hello"), Response(item=" world")]
         usage = Usage(
             provider="fake", model="test-model", input_tokens=10, output_tokens=5
         )
@@ -69,17 +69,17 @@ class TestYLLMClient:
         collected = [item async for item in stream]
 
         assert len(collected) == 2
-        assert collected[0] == Response(text="Hello")
-        assert collected[1] == Response(text=" world")
+        assert collected[0] == Response(item="Hello")
+        assert collected[1] == Response(item=" world")
         assert store["usage"] == usage
         assert store["cost"] is None  # no price calculator
 
     @pytest.mark.asyncio
     async def test_stream_with_reasoning_and_tool_calls(self):
         items = [
-            Reasoning(text="Let me think..."),
+            Reasoning(item="Let me think..."),
             ToolCall(id="tc_1", name="search", arguments='{"q": "test"}'),
-            Response(text="Here's what I found."),
+            Response(item="Here's what I found."),
         ]
         usage = Usage(provider="fake", model="m", input_tokens=20, output_tokens=15)
         provider = FakeProvider(items, usage)
@@ -94,7 +94,7 @@ class TestYLLMClient:
 
     @pytest.mark.asyncio
     async def test_stream_with_price_calculator(self):
-        items = [Response(text="ok")]
+        items = [Response(item="ok")]
         usage = Usage(provider="fake", model="m", input_tokens=100, output_tokens=50)
         provider = FakeProvider(items, usage)
 
@@ -125,7 +125,7 @@ class TestYLLMClient:
     @pytest.mark.asyncio
     async def test_default_model_override(self):
         """model kwarg should override default_model."""
-        items = [Response(text="ok")]
+        items = [Response(item="ok")]
         usage = Usage(
             provider="fake", model="override-model", input_tokens=1, output_tokens=1
         )

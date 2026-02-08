@@ -72,9 +72,9 @@ yuullm.tool("tc_1", "Search returned 5 results.")
 
 流中的每个元素是以下三种之一：
 
-- **Reasoning** -- 模型的思考过程片段（chain-of-thought / extended thinking）
+- **Reasoning** -- 模型的思考过程片段（chain-of-thought / extended thinking），内容是 `Item` 类型（支持文本或多模态）
 - **ToolCall** -- 模型发起的工具调用请求（包含 id, name, arguments）
-- **Response** -- 模型的最终文本回复片段
+- **Response** -- 模型的最终回复片段，内容是 `Item` 类型（支持文本或多模态）
 
 ### Tools
 
@@ -237,7 +237,7 @@ def tool(tool_call_id: str, content: str) -> Message: ...
 
 # -- 输出流: msgspec struct --
 class Reasoning(msgspec.Struct, frozen=True):
-    text: str
+    item: Item              # 思考内容，可以是文本(str)或多模态(dict)
 
 class ToolCall(msgspec.Struct, frozen=True):
     id: str
@@ -245,7 +245,7 @@ class ToolCall(msgspec.Struct, frozen=True):
     arguments: str          # raw JSON string
 
 class Response(msgspec.Struct, frozen=True):
-    text: str
+    item: Item              # 回复内容，可以是文本(str)或多模态(dict)
 
 StreamItem = Reasoning | ToolCall | Response
 
@@ -372,12 +372,20 @@ messages = [
 
 # --- 流式调用 ---
 stream, store = await client.stream(messages)
-async for item in stream:
-    match item:
-        case yuullm.Reasoning(text=t):
-            print(f"[thinking] {t}", end="")
-        case yuullm.Response(text=t):
-            print(t, end="")
+async for stream_item in stream:
+    match stream_item:
+        case yuullm.Reasoning(item=i):
+            # item 可以是 str 或 dict（多模态）
+            if isinstance(i, str):
+                print(f"[thinking] {i}", end="")
+            else:
+                print(f"[thinking] {i}", end="")
+        case yuullm.Response(item=i):
+            # item 可以是 str 或 dict（多模态）
+            if isinstance(i, str):
+                print(i, end="")
+            else:
+                print(f"[{i.get('type', 'content')}]", end="")
         case yuullm.ToolCall() as tc:
             print(f"[tool_call] {tc.name}({tc.arguments})")
 

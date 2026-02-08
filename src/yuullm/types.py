@@ -13,14 +13,27 @@ import msgspec
 
 
 # ---------------------------------------------------------------------------
+# Core content types (shared by messages and stream outputs)
+# ---------------------------------------------------------------------------
+
+# A content item: plain text or structured dict
+# (images, audio, tool_calls, tool_results, etc.)
+Item = str | dict[str, Any]
+
+
+# ---------------------------------------------------------------------------
 # StreamItem variants (output types -- what the model produces)
 # ---------------------------------------------------------------------------
 
 
 class Reasoning(msgspec.Struct, frozen=True):
-    """A fragment of the model's chain-of-thought / extended thinking."""
+    """A fragment of the model's chain-of-thought / extended thinking.
 
-    text: str
+    The content can be plain text (str) or multimodal content (dict),
+    depending on the model's output format.
+    """
+
+    item: Item
 
 
 class ToolCall(msgspec.Struct, frozen=True):
@@ -32,21 +45,16 @@ class ToolCall(msgspec.Struct, frozen=True):
 
 
 class Response(msgspec.Struct, frozen=True):
-    """A fragment of the model's final text reply."""
+    """A fragment of the model's final reply.
 
-    text: str
+    The content can be plain text (str) or multimodal content (dict),
+    allowing models to output structured or non-text content.
+    """
+
+    item: Item
 
 
 StreamItem = Reasoning | ToolCall | Response
-
-
-# ---------------------------------------------------------------------------
-# Message types -- lightweight tuple-based
-# ---------------------------------------------------------------------------
-
-# A content item in a message: plain text or structured dict
-# (images, audio, tool_calls, tool_results, etc.)
-Item = str | dict[str, Any]
 
 # Message = (role, items)
 # role: "system" | "user" | "assistant" | "tool"

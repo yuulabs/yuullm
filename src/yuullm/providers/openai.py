@@ -226,11 +226,11 @@ class OpenAIProvider:
                     "reasoning"
                 )
             if reasoning_text:
-                yield Reasoning(text=reasoning_text)
+                yield Reasoning(item=reasoning_text)
 
             # Regular content
             if delta.content:
-                yield Response(text=delta.content)
+                yield Response(item=delta.content)
 
             # Tool calls (streamed incrementally)
             if delta.tool_calls:
