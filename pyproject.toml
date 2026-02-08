@@ -1,0 +1,29 @@
+[project]
+name = "yuullm"
+version = "0.1.0"
+description = "Unified streaming LLM interface with provider-agnostic reasoning/tool-call abstraction"
+readme = "README.md"
+authors = [
+    { name = "Tomorrowdawn", email = "tomorrowdawn@mail.ustc.edu.cn" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "msgspec>=0.19.0",
+    "pyyaml>=6.0",
+    "genai-prices>=0.0.50",
+    "openai>=1.70.0",
+    "anthropic>=0.52.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.26.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.13,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

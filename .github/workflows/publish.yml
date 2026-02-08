@@ -1,0 +1,51 @@
+# Publish yuullm to PyPI when a version tag is pushed.
+#
+# Usage:
+#   git tag v0.1.0
+#   git push origin v0.1.0
+#
+# Prerequisites:
+#   1. Create a PyPI Trusted Publisher for this repo:
+#      https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/
+#   2. Or set a PYPI_API_TOKEN secret in repo settings.
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Build sdist & wheel
+        run: uv build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write          # required for trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        # If not using trusted publishing, uncomment:
+        # with:
+        #   password: ${{ secrets.PYPI_API_TOKEN }}
