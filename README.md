@@ -353,6 +353,20 @@ provider = yuullm.providers.AnthropicProvider(
 
 Handles Anthropic-specific streaming events including `thinking_delta` for extended thinking and `tool_use` content blocks.
 
+## Development Setup
+
+To set up the development environment and install all project-specific git hooks:
+
+```bash
+./scripts/setup-dev.sh
+```
+
+This script installs git hooks for code quality and release safety. Currently includes:
+
+- **pre-push**: Validates that git tag versions match `pyproject.toml` version before pushing tags
+
+Future development tools (linting hooks, commit message validation, etc.) will be added to this centralized setup script.
+
 ## Pricing
 
 Cost is calculated using a three-level priority system:

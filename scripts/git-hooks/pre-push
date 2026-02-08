@@ -1,0 +1,30 @@
+#!/bin/bash
+# Pre-push hook: Check if tag version matches pyproject.toml
+
+# Read all refs from stdin
+while read local_ref local_sha remote_ref remote_sha; do
+    # Check if this is a tag push (refs/tags/)
+    if [[ "$remote_ref" == refs/tags/* ]]; then
+        # Extract tag name and remove 'v' prefix if present
+        tag_name="${remote_ref#refs/tags/}"
+        tag_version="${tag_name#v}"
+        
+        # Read version from pyproject.toml
+        pyproject_version=$(grep -E '^version\s*=' pyproject.toml | sed 's/.*=\s*"\([^"]*\)".*/\1/')
+        
+        if [ -z "$pyproject_version" ]; then
+            echo "Error: Could not find version in pyproject.toml"
+            exit 1
+        fi
+        
+        if [ "$tag_version" != "$pyproject_version" ]; then
+            echo "Error: Tag version '$tag_name' does not match pyproject.toml version '$pyproject_version'"
+            echo "Please update pyproject.toml version before pushing this tag"
+            exit 1
+        fi
+        
+        echo "✓ Tag version '$tag_name' matches pyproject.toml version '$pyproject_version'"
+    fi
+done
+
+exit 0
