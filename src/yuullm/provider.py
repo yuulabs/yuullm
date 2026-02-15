@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from .types import Message, StreamResult
+from .types import Message, RawChunkHook, StreamResult
 
 
 class Provider(Protocol):
@@ -48,6 +48,7 @@ class Provider(Protocol):
         *,
         model: str,
         tools: list[dict[str, Any]] | None = None,
+        on_raw_chunk: RawChunkHook | None = None,
         **kwargs,
     ) -> StreamResult:
         """Start a streaming completion.

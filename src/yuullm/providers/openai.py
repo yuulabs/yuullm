@@ -16,6 +16,7 @@ import openai
 from ..types import (
     Item,
     Message,
+    RawChunkHook,
     Reasoning,
     Response,
     StreamItem,
@@ -184,6 +185,7 @@ class OpenAIChatCompletionProvider:
         *,
         model: str,
         tools: list[dict[str, Any]] | None = None,
+        on_raw_chunk: RawChunkHook | None = None,
         **kwargs,
     ) -> StreamResult:
         store: dict = {}
@@ -202,7 +204,7 @@ class OpenAIChatCompletionProvider:
 
         response = await self._client.chat.completions.create(**create_kwargs)
 
-        iterator = self._iterate(response, model, store)
+        iterator = self._iterate(response, model, store, on_raw_chunk)
         return iterator, store
 
     async def _iterate(
@@ -210,12 +212,15 @@ class OpenAIChatCompletionProvider:
         response,
         model: str,
         store: dict,
+        on_raw_chunk: RawChunkHook | None = None,
     ) -> AsyncIterator[StreamItem]:
         # Accumulate tool calls by index
         tool_calls_acc: dict[int, dict] = {}
         request_id: str | None = None
 
         async for chunk in response:
+            if on_raw_chunk is not None:
+                on_raw_chunk(chunk)
             # Capture request id from first chunk
             if request_id is None and chunk.id:
                 request_id = chunk.id

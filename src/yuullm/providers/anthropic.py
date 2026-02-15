@@ -14,6 +14,7 @@ import anthropic
 from ..types import (
     Item,
     Message,
+    RawChunkHook,
     Reasoning,
     Response,
     StreamItem,
@@ -186,6 +187,7 @@ class AnthropicMessagesProvider:
         *,
         model: str,
         tools: list[dict[str, Any]] | None = None,
+        on_raw_chunk: RawChunkHook | None = None,
         **kwargs,
     ) -> StreamResult:
         store: dict = {}
@@ -204,7 +206,7 @@ class AnthropicMessagesProvider:
         if tools:
             create_kwargs["tools"] = self._convert_tools(tools)
 
-        iterator = self._iterate(create_kwargs, model, store)
+        iterator = self._iterate(create_kwargs, model, store, on_raw_chunk)
         return iterator, store
 
     async def _iterate(
@@ -212,6 +214,7 @@ class AnthropicMessagesProvider:
         create_kwargs: dict,
         model: str,
         store: dict,
+        on_raw_chunk: RawChunkHook | None = None,
     ) -> AsyncIterator[StreamItem]:
         # Accumulate tool calls by block index
         tool_calls_acc: dict[int, dict] = {}
@@ -221,6 +224,9 @@ class AnthropicMessagesProvider:
 
         async with self._client.messages.stream(**create_kwargs) as stream:
             async for event in stream:
+                if on_raw_chunk is not None:
+                    on_raw_chunk(event)
+
                 match event.type:
                     case "message_start":
                         msg = event.message

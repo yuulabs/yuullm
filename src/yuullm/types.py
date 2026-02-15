@@ -8,7 +8,7 @@ the OpenAI API format.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any, Literal, Required, TypedDict
 
 import msgspec
@@ -226,3 +226,69 @@ Expected keys (set by the framework):
 
 StreamResult = tuple[AsyncIterator[StreamItem], Store]
 """Return type of ``Provider.stream()`` and ``YLLMClient.stream()``."""
+
+
+# ---------------------------------------------------------------------------
+# Raw chunk hook
+# ---------------------------------------------------------------------------
+
+RawChunkHook = Callable[[Any], None]
+"""Callback invoked with every raw provider chunk before yuullm processes it.
+
+The chunk type depends on the provider:
+- OpenAI: ``openai.types.chat.ChatCompletionChunk``
+- Anthropic: an event object with ``.type`` attribute
+
+This is the escape hatch for consumers who need provider-level visibility
+without abandoning yuullm's streaming abstraction.
+"""
+
+
+def on_tool_call_name(
+    name: str, callback: Callable[[int], None]
+) -> RawChunkHook:
+    """Helper hook: fires *callback(index)* when a tool call's name matches.
+
+    Works with both OpenAI and Anthropic raw chunks.  The callback is
+    invoked at most once per tool-call index.
+
+    If the LLM emits the name after the arguments (unlikely but possible),
+    the notification will simply arrive late -- that's the caller's bad luck.
+
+    Parameters
+    ----------
+    name : str
+        The tool / function name to watch for.
+    callback : Callable[[int], None]
+        Called with the tool-call index the first time *name* is seen.
+    """
+    seen: set[int] = set()
+
+    def hook(chunk: Any) -> None:
+        # --- OpenAI path ---
+        choices = getattr(chunk, "choices", None)
+        if choices:
+            delta = choices[0].delta if choices else None
+            tc_deltas = getattr(delta, "tool_calls", None) if delta else None
+            if tc_deltas:
+                for tc_delta in tc_deltas:
+                    idx = tc_delta.index
+                    if idx in seen:
+                        continue
+                    fn = getattr(tc_delta, "function", None)
+                    if fn and getattr(fn, "name", None) == name:
+                        seen.add(idx)
+                        callback(idx)
+            return
+
+        # --- Anthropic path ---
+        event_type = getattr(chunk, "type", None)
+        if event_type == "content_block_start":
+            block = getattr(chunk, "content_block", None)
+            if block and getattr(block, "type", None) == "tool_use":
+                idx = getattr(chunk, "index", -1)
+                if idx not in seen and getattr(block, "name", None) == name:
+                    seen.add(idx)
+                    callback(idx)
+
+    return hook

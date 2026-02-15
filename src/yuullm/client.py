@@ -10,6 +10,7 @@ from .provider import Provider
 from .types import (
     Cost,
     Message,
+    RawChunkHook,
     StreamItem,
     StreamResult,
     Usage,
@@ -46,6 +47,7 @@ class YLLMClient:
         *,
         model: str | None = None,
         tools: list[dict[str, Any]] | None = None,
+        on_raw_chunk: RawChunkHook | None = None,
         **kwargs,
     ) -> StreamResult:
         """Start a streaming completion.
@@ -63,6 +65,7 @@ class YLLMClient:
             messages,
             model=effective_model,
             tools=effective_tools,
+            on_raw_chunk=on_raw_chunk,
             **kwargs,
         )
 

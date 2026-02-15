@@ -24,6 +24,7 @@ from .types import (
     ImageItem,
     Item,
     Message,
+    RawChunkHook,
     Reasoning,
     Response,
     StreamItem,
@@ -39,6 +40,8 @@ from .types import (
     system,
     tool,
     user,
+    # Hook helpers
+    on_tool_call_name,
 )
 
 # Lazy import to avoid hard dependency on provider SDKs at import time
@@ -77,6 +80,9 @@ __all__ = [
     # Usage & Cost
     "Usage",
     "Cost",
+    # Hook types & helpers
+    "RawChunkHook",
+    "on_tool_call_name",
     # Providers sub-package
     "providers",
 ]
