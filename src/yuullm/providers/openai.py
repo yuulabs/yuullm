@@ -21,6 +21,7 @@ from ..types import (
     Response,
     StreamItem,
     StreamResult,
+    Tick,
     ToolCall,
     Usage,
 )
@@ -282,6 +283,10 @@ class OpenAIChatCompletionProvider:
                             acc["name"] = tc_delta.function.name
                         if tc_delta.function.arguments:
                             acc["arguments"] += tc_delta.function.arguments
+                # Keep the consumer loop spinning so on_raw_chunk
+                # side-effects (e.g. pending_sse) can be flushed.
+                if on_raw_chunk is not None:
+                    yield Tick()
 
         # Yield fully assembled tool calls
         for _idx in sorted(tool_calls_acc):

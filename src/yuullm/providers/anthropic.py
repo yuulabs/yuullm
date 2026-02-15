@@ -19,6 +19,7 @@ from ..types import (
     Response,
     StreamItem,
     StreamResult,
+    Tick,
     ToolCall,
     Usage,
 )
@@ -253,6 +254,10 @@ class AnthropicMessagesProvider:
                                     tool_calls_acc[current_block_index][
                                         "arguments"
                                     ] += delta.partial_json
+                                # Keep the consumer loop spinning so
+                                # on_raw_chunk side-effects can be flushed.
+                                if on_raw_chunk is not None:
+                                    yield Tick()
                     case "content_block_stop":
                         if current_block_index in tool_calls_acc:
                             acc = tool_calls_acc.pop(current_block_index)

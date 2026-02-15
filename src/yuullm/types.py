@@ -120,7 +120,21 @@ class Response(msgspec.Struct, frozen=True):
     item: Item
 
 
-StreamItem = Reasoning | ToolCall | Response
+class Tick(msgspec.Struct, frozen=True):
+    """Lightweight heartbeat yielded during tool-call argument streaming.
+
+    While the provider accumulates tool-call deltas it normally yields
+    nothing, which starves consumers that rely on the iteration loop to
+    flush side-channel data (e.g. ``pending_sse`` populated by
+    ``on_raw_chunk`` hooks).  ``Tick`` keeps the async-for loop spinning
+    so those consumers can act promptly.
+
+    Consumers that only care about ``Reasoning | ToolCall | Response``
+    can safely ignore ``Tick`` — it carries no payload.
+    """
+
+
+StreamItem = Reasoning | ToolCall | Response | Tick
 
 # Message = (role, items)
 # role: "system" | "user" | "assistant" | "tool"
