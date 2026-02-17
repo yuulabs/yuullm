@@ -2,23 +2,15 @@
 
 Unified streaming LLM interface with provider-agnostic reasoning / tool-call abstraction.
 
-## Overview
+## What It Does
 
-yuullm provides a standardised streaming abstraction layer over different LLM providers. It has two core responsibilities:
+yuullm normalises the streaming differences across LLM providers (OpenAI, Anthropic, and any OpenAI-compatible API) into a uniform `AsyncIterator[Reasoning | ToolCall | Response]`. It also collects `Usage` and `Cost` after the stream ends.
 
-1. **Stream standardisation** — normalises differences in thinking formats (`reasoning_content` / `thinking` / …) and tool-call protocols across providers, outputting a uniform `AsyncIterator[Reasoning | ToolCall | Response]` stream.
-2. **Usage + Cost collection** — after the stream ends, structured `Usage` (from the API) and `Cost` (calculated by yuullm) are available via a store dict.
+yuullm is **stateless** — no session, no history management. You own the message list.
 
-yuullm is **stateless** — it has no session concept and does not maintain conversation history.
+### Design in One Sentence
 
-### Design Philosophy
-
-yuullm intentionally avoids heavy abstractions:
-
-- **Messages are tuples**, not classes. `("role", [items])` — no `SystemMessage`, `UserMessage` imports needed.
-- **Tools are dicts**, not a custom `ToolSpec`. Pass `list[dict]` directly — works seamlessly with `yuutools.ToolManager.specs()`, but with zero dependency.
-- **Helper functions** `system()`, `user()`, `assistant()`, `tool()` for ergonomic one-liner message construction.
-- **Multimodal native** — `Item = str | dict`, so images, audio, and structured content are first-class.
+Messages are tuples, tools are dicts, output items are typed structs — minimal abstraction, maximum interop.
 
 ## Installation
 
@@ -27,8 +19,6 @@ pip install yuullm
 ```
 
 ## Quick Start
-
-### Basic Chat (with helpers)
 
 ```python
 import yuullm
@@ -53,279 +43,101 @@ async for item in stream:
 
 # After stream ends
 usage = store["usage"]
-print(f"\nTokens: {usage.input_tokens} in / {usage.output_tokens} out")
+cost = store["cost"]  # Cost | None
 ```
 
-### Basic Chat (raw tuples)
+## Best Practice: Tool-Call Round-Trip
 
-Messages are just `(role, items)` tuples — no imports needed beyond `yuullm`:
-
-```python
-import yuullm
-
-client = yuullm.YLLMClient(
-    provider=yuullm.providers.OpenAIProvider(api_key="sk-..."),
-    default_model="gpt-4o",
-)
-
-messages = [
-    ("system", ["You are a helpful assistant."]),
-    ("user", ["What is 2+2?"]),
-]
-
-stream, store = await client.stream(messages)
-async for stream_item in stream:
-    match stream_item:
-        case yuullm.Reasoning(item=i):
-            if isinstance(i, str):
-                print(f"[thinking] {i}", end="")
-        case yuullm.Response(item=i):
-            if isinstance(i, str):
-                print(i, end="")
-```
-
-### Multimodal (with helpers)
-
-```python
-messages = [
-    yuullm.system("You are a vision assistant."),
-    yuullm.user("What is in this image?", {
-        "type": "image_url",
-        "image_url": {"url": "https://example.com/photo.png"},
-    }),
-]
-```
-
-### Multimodal (raw tuples)
-
-```python
-messages = [
-    ("system", ["You are a vision assistant."]),
-    ("user", [
-        "What is in this image?",
-        {"type": "image_url", "image_url": {"url": "https://example.com/photo.png"}},
-    ]),
-]
-```
-
-### Tool Calling (with helpers)
-
-Tools are plain `list[dict]` — pass json_schema dicts directly:
-
-```python
-tools = [{
-    "type": "function",
-    "function": {
-        "name": "get_weather",
-        "description": "Get current weather for a city",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "city": {"type": "string", "description": "City name"},
-            },
-            "required": ["city"],
-        },
-    },
-}]
-
-client = yuullm.YLLMClient(
-    provider=yuullm.providers.OpenAIProvider(api_key="sk-..."),
-    default_model="gpt-4o",
-    tools=tools,
-)
-
-messages = [yuullm.user("What's the weather in Tokyo?")]
-stream, store = await client.stream(messages)
-
-async for stream_item in stream:
-    match stream_item:
-        case yuullm.Reasoning(item=i):
-            if isinstance(i, str):
-                print(f"[thinking] {i}", end="")
-        case yuullm.Response(item=i):
-            if isinstance(i, str):
-                print(i, end="")
-```
-
-Or override tools per-request:
-
-```python
-stream, store = await client.stream(messages, tools=other_tools)
-```
-
-### Integration with yuutools
-
-```python
-import yuutools as yt
-import yuullm
-
-manager = yt.ToolManager([search_tool, calculator_tool])
-
-# manager.specs() returns list[dict] in OpenAI function-calling format
-# pass directly to yuullm — no conversion needed
-stream, store = await client.stream(messages, tools=manager.specs())
-```
-
-### Multi-turn Conversation (with helpers)
-
-yuullm is stateless — you manage the message list yourself:
-
-```python
-messages = [
-    yuullm.system("You are a helpful assistant."),
-    yuullm.user("Hi, my name is Alice."),
-]
-
-# First turn
-stream, store = await client.stream(messages)
-reply = ""
-async for stream_item in stream:
-    if isinstance(stream_item, yuullm.Response):
-        if isinstance(stream_item.item, str):
-            reply += stream_item.item
-
-# Append assistant reply and next user message
-messages.append(yuullm.assistant(reply))
-messages.append(yuullm.user("What's my name?"))
-
-# Second turn
-stream, store = await client.stream(messages)
-async for stream_item in stream:
-    if isinstance(stream_item, yuullm.Response):
-        if isinstance(stream_item.item, str):
-            print(stream_item.item, end="")
-```
-
-### Multi-turn Conversation (raw tuples)
-
-```python
-messages = [
-    ("system", ["You are a helpful assistant."]),
-    ("user", ["Hi, my name is Alice."]),
-]
-
-# First turn
-stream, store = await client.stream(messages)
-reply = ""
-async for stream_item in stream:
-    if isinstance(stream_item, yuullm.Response):
-        if isinstance(stream_item.item, str):
-            reply += stream_item.item
-
-# Append assistant reply and next user message
-messages.append(("assistant", [reply]))
-messages.append(("user", ["What's my name?"]))
-
-# Second turn
-stream, store = await client.stream(messages)
-async for stream_item in stream:
-    if isinstance(stream_item, yuullm.Response):
-        if isinstance(stream_item.item, str):
-            print(stream_item.item, end="")
-```
-
-### Tool Call Round-trip (with helpers)
-
-A full tool-use loop: model calls a tool, you execute it, then feed the result back:
+When you give tools to an LLM, the model may respond with `ToolCall` items instead of (or alongside) text. You need to execute those calls and feed results back. Here's the idiomatic pattern:
 
 ```python
 import json
+import yuullm
 
 messages = [yuullm.user("What's the weather in Paris?")]
 
-stream, store = await client.stream(messages)
-tool_calls = []
-async for stream_item in stream:
-    match stream_item:
-        case yuullm.ToolCall() as tc:
-            tool_calls.append(tc)
-        case yuullm.Response(item=i):
-            if isinstance(i, str):
-                print(i, end="")
+while True:
+    stream, store = await client.stream(messages, tools=tools)
 
-if tool_calls:
-    # Append assistant message with tool calls as dicts
+    tool_calls: list[yuullm.ToolCall] = []
+    async for item in stream:
+        match item:
+            case yuullm.Reasoning(item=text) if isinstance(text, str):
+                print(f"[thinking] {text}", end="")
+            case yuullm.ToolCall() as tc:
+                tool_calls.append(tc)
+            case yuullm.Response(item=text) if isinstance(text, str):
+                print(text, end="")
+            case yuullm.Tick():
+                pass  # heartbeat during tool-call streaming, safe to ignore
+
+    if not tool_calls:
+        break  # model replied with text, done
+
+    # Append assistant message containing tool calls
     messages.append(yuullm.assistant(
-        *[{"type": "tool_call", "id": tc.id, "name": tc.name, "arguments": tc.arguments}
+        *[{"type": "tool_call", "id": tc.id,
+           "name": tc.name, "arguments": tc.arguments}
           for tc in tool_calls]
     ))
 
     # Execute each tool and append results
     for tc in tool_calls:
-        result = execute_tool(tc.name, json.loads(tc.arguments))  # your function
-        messages.append(yuullm.tool(tc.id, json.dumps(result)))
-
-    # Continue the conversation
-    stream, store = await client.stream(messages)
-    async for stream_item in stream:
-        if isinstance(stream_item, yuullm.Response):
-            if isinstance(stream_item.item, str):
-                print(stream_item.item, end="")
-```
-
-### Tool Call Round-trip (raw tuples)
-
-```python
-import json
-
-messages = [("user", ["What's the weather in Paris?"])]
-
-stream, store = await client.stream(messages)
-tool_calls = []
-async for stream_item in stream:
-    match stream_item:
-        case yuullm.ToolCall() as tc:
-            tool_calls.append(tc)
-        case yuullm.Response(item=i):
-            if isinstance(i, str):
-                print(i, end="")
-
-if tool_calls:
-    # Append assistant message with tool call dicts
-    messages.append(("assistant", [
-        {"type": "tool_call", "id": tc.id, "name": tc.name, "arguments": tc.arguments}
-        for tc in tool_calls
-    ]))
-
-    # Execute each tool and append results
-    for tc in tool_calls:
         result = execute_tool(tc.name, json.loads(tc.arguments))
-        messages.append(("tool", [
-            {"type": "tool_result", "tool_call_id": tc.id, "content": json.dumps(result)}
-        ]))
-
-    # Continue the conversation
-    stream, store = await client.stream(messages)
-    async for stream_item in stream:
-        if isinstance(stream_item, yuullm.Response):
-            if isinstance(stream_item.item, str):
-                print(stream_item.item, end="")
+        messages.append(yuullm.tool(tc.id, json.dumps(result)))
 ```
 
-### Cost Tracking
+**Key points:**
+
+- Use `match`/`case` to dispatch all four stream item types. `Tick` carries no payload — ignore it unless you have a reason not to.
+- The `while True` loop handles multi-round tool use (the model may chain multiple tool calls before producing a final text response).
+- `yuullm.assistant(...)` and `yuullm.tool(...)` are helpers that build the correct `(role, items)` tuples.
+
+## Hooks: Provider-Level Visibility
+
+### Motivation
+
+yuullm abstracts away raw provider chunks into `Reasoning | ToolCall | Response`. But sometimes you need the raw chunks — for example, to forward SSE events to a frontend in real time, or to detect a specific tool call name before the full arguments finish streaming.
+
+The `on_raw_chunk` hook gives you provider-level visibility without abandoning the streaming abstraction.
+
+### `on_raw_chunk`
+
+Pass a callback to `client.stream()`. It fires on every raw provider chunk *before* yuullm processes it:
 
 ```python
-client = yuullm.YLLMClient(
-    provider=yuullm.providers.OpenAIProvider(api_key="sk-..."),
-    default_model="gpt-4o",
-    price_calculator=yuullm.PriceCalculator(
-        yaml_path="./custom_prices.yaml",  # optional, for custom pricing
-    ),
+def forward_to_frontend(chunk):
+    # chunk type depends on provider:
+    #   OpenAI:    openai.types.chat.ChatCompletionChunk
+    #   Anthropic: event object with .type attribute
+    sse_queue.put(chunk)
+
+stream, store = await client.stream(
+    messages,
+    on_raw_chunk=forward_to_frontend,
 )
+```
 
-stream, store = await client.stream(messages)
-async for item in stream:
-    ...  # consume the stream
+### `Tick` Heartbeat
 
-usage: yuullm.Usage = store["usage"]
-cost: yuullm.Cost | None = store["cost"]
+**Problem:** During tool-call streaming, the provider accumulates argument deltas internally and yields nothing to the async-for loop. If your `on_raw_chunk` hook pushes SSE events into a queue, the consumer loop never gets a chance to flush them until the tool call finishes — SSE events arrive in a burst instead of in real time.
 
-print(f"Tokens: {usage.input_tokens} in / {usage.output_tokens} out")
-print(f"Cache:  {usage.cache_read_tokens} read / {usage.cache_write_tokens} write")
-if cost:
-    print(f"Cost: ${cost.total_cost:.6f} (source: {cost.source})")
-else:
-    print("Cost: unavailable (model price not found)")
+**Solution:** When `on_raw_chunk` is registered, yuullm yields `Tick()` items during tool-call argument accumulation. `Tick` carries no data; it just keeps your async-for loop spinning so side-channel work (like flushing an SSE queue) can proceed promptly.
+
+If you don't use `on_raw_chunk`, no `Tick` is ever emitted — fully backward compatible.
+
+### `on_tool_call_name` Helper
+
+Fires a callback when a specific tool call name is detected in the raw stream, useful for early UI feedback (e.g., showing a "Searching..." indicator before arguments finish streaming):
+
+```python
+def on_search_start(index: int):
+    notify_ui("search_started")
+
+stream, store = await client.stream(
+    messages,
+    on_raw_chunk=yuullm.on_tool_call_name("search", on_search_start),
+)
 ```
 
 ## Providers
@@ -340,7 +152,16 @@ provider = yuullm.providers.OpenAIProvider(
 )
 ```
 
-Works with any OpenAI-compatible API (Azure, OpenRouter, vLLM, etc.) by setting `base_url` and `provider_name`.
+Works with any OpenAI-compatible API (DeepSeek, OpenRouter, vLLM, etc.) by setting `base_url` and `provider_name`:
+
+```python
+# DeepSeek
+provider = yuullm.providers.OpenAIProvider(
+    api_key="sk-...",
+    base_url="https://api.deepseek.com/v1",
+    provider_name="deepseek",
+)
+```
 
 ### Anthropic
 
@@ -351,35 +172,30 @@ provider = yuullm.providers.AnthropicProvider(
 )
 ```
 
-Handles Anthropic-specific streaming events including `thinking_delta` for extended thinking and `tool_use` content blocks.
-
-## Development Setup
-
-To set up the development environment and install all project-specific git hooks:
-
-```bash
-./scripts/setup-dev.sh
-```
-
-This script installs git hooks for code quality and release safety. Currently includes:
-
-- **pre-push**: Validates that git tag versions match `pyproject.toml` version before pushing tags
-
-Future development tools (linting hooks, commit message validation, etc.) will be added to this centralized setup script.
-
 ## Pricing
 
-Cost is calculated using a three-level priority system:
+Cost is calculated using a three-level fallback:
 
 | Priority | Source | Description |
 |----------|--------|-------------|
-| 1 (highest) | Provider-supplied | Aggregators like OpenRouter / LiteLLM return cost in the API response |
+| 1 (highest) | Provider-supplied | Aggregators like OpenRouter return cost in the API response |
 | 2 | YAML config | User-supplied price table for custom / negotiated pricing |
 | 3 (lowest) | genai-prices | Community-maintained database via [pydantic/genai-prices](https://github.com/pydantic/genai-prices) |
 
-If none of the sources can determine the price, `store["cost"]` is `None`.
+If none match, `store["cost"]` is `None` — never blocks.
 
-### YAML Price File Format
+```python
+client = yuullm.YLLMClient(
+    provider=...,
+    default_model="gpt-4o",
+    price_calculator=yuullm.PriceCalculator(
+        yaml_path="./custom_prices.yaml",  # optional
+    ),
+)
+```
+
+<details>
+<summary>YAML price file format</summary>
 
 ```yaml
 - provider: openai
@@ -387,7 +203,7 @@ If none of the sources can determine the price, `store["cost"]` is `None`.
     - id: gpt-4o
       prices:
         input_mtok: 2.5        # USD per million input tokens
-        output_mtok: 10         # USD per million output tokens
+        output_mtok: 10
         cache_read_mtok: 1.25   # optional
 
 - provider: anthropic
@@ -402,7 +218,29 @@ If none of the sources can determine the price, `store["cost"]` is `None`.
 
 Matching is exact on `(provider, model_id)`. No fuzzy matching.
 
+</details>
+
 ## API Reference
+
+### Messages
+
+```python
+Message = tuple[str, list[Item]]   # (role, items)
+Item = str | dict[str, Any]        # text or structured content (image, audio, tool_call, ...)
+```
+
+Helper functions: `system(content)`, `user(*items)`, `assistant(*items)`, `tool(tool_call_id, content)`.
+
+Messages are plain tuples — you can also write `("user", ["Hello!"])` directly without helpers.
+
+### Stream Items
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `Reasoning` | `item: Item` | Chain-of-thought fragment |
+| `ToolCall` | `id`, `name`, `arguments` | Tool invocation (`arguments` is raw JSON string) |
+| `Response` | `item: Item` | Final reply fragment |
+| `Tick` | *(none)* | Heartbeat during tool-call streaming (only when `on_raw_chunk` is set) |
 
 ### YLLMClient
 
@@ -410,76 +248,26 @@ Matching is exact on `(provider, model_id)`. No fuzzy matching.
 YLLMClient(
     provider: Provider,
     default_model: str,
-    tools: list[dict] | None = None,              # json_schema tool dicts
+    tools: list[dict] | None = None,
     price_calculator: PriceCalculator | None = None,
 )
 ```
 
-#### `client.stream(messages, *, model=None, tools=None, **kwargs)`
+#### `client.stream(messages, *, model=None, tools=None, on_raw_chunk=None, **kwargs)`
 
-Returns `(AsyncIterator[StreamItem], store)`. The `model` and `tools` params override the defaults set at init.
+Returns `(AsyncIterator[StreamItem], store)`. `model` and `tools` override the defaults. After the iterator is exhausted, `store["usage"]` is a `Usage` and `store["cost"]` is `Cost | None`.
 
-### Messages
-
-```python
-Message = tuple[str, list[Item]]  # (role, items)
-Item = str | dict[str, Any]       # text or structured content
-History = list[Message]
-```
-
-Helper functions:
-
-| Function | Signature | Example |
-|----------|-----------|---------|
-| `system` | `system(content: str)` | `system("You are helpful.")` |
-| `user` | `user(*items: Item)` | `user("Hello!")` / `user("Look:", {"type": "image_url", ...})` |
-| `assistant` | `assistant(*items: Item)` | `assistant("Sure!", {"type": "tool_call", ...})` |
-| `tool` | `tool(tool_call_id: str, content: str)` | `tool("tc_1", '{"result": 42}')` |
-
-Tool call items in assistant messages use this dict shape:
+### Usage & Cost
 
 ```python
-{"type": "tool_call", "id": "...", "name": "...", "arguments": "..."}
+Usage(provider, model, request_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens)
+Cost(input_cost, output_cost, total_cost, cache_read_cost, cache_write_cost, source)
 ```
 
-Tool result items in tool messages use this dict shape:
+## Development Setup
 
-```python
-{"type": "tool_result", "tool_call_id": "...", "content": "..."}
+```bash
+./scripts/setup-dev.sh
 ```
 
-### Stream Items
-
-| Type | Fields | Description |
-|------|--------|-------------|
-| `Reasoning` | `item: Item` | Chain-of-thought / extended thinking fragment (text or multimodal) |
-| `ToolCall` | `id: str`, `name: str`, `arguments: str` | Tool invocation request (`arguments` is raw JSON) |
-| `Response` | `item: Item` | Final reply fragment (text or multimodal) |
-
-### Usage
-
-```python
-Usage(
-    provider: str,
-    model: str,
-    request_id: str | None = None,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
-    cache_read_tokens: int = 0,
-    cache_write_tokens: int = 0,
-    total_tokens: int | None = None,
-)
-```
-
-### Cost
-
-```python
-Cost(
-    input_cost: float,
-    output_cost: float,
-    total_cost: float,
-    cache_read_cost: float = 0.0,
-    cache_write_cost: float = 0.0,
-    source: str = "",  # "provider" | "yaml" | "genai-prices"
-)
-```
+Installs git hooks (currently: pre-push tag/version validation).
