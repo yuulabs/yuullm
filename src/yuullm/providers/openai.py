@@ -140,11 +140,13 @@ class OpenAIChatCompletionProvider:
             elif role == "tool":
                 for it in items:
                     if isinstance(it, dict) and it.get("type") == "tool_result":
+                        content = it.get("content", "")
+                        # OpenAI natively supports list content blocks in tool results
                         result.append(
                             {
                                 "role": "tool",
                                 "tool_call_id": it["tool_call_id"],
-                                "content": it.get("content", ""),
+                                "content": content,
                             }
                         )
 

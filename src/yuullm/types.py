@@ -33,7 +33,7 @@ class ToolResultItem(TypedDict):
 
     type: Literal["tool_result"]
     tool_call_id: str
-    content: str
+    content: str | list[dict]
 
 
 class TextItem(TypedDict):
@@ -182,12 +182,18 @@ def assistant(*items: Item) -> Message:
     return ("assistant", list(items))
 
 
-def tool(tool_call_id: str, content: str) -> Message:
+def tool(tool_call_id: str, content: str | list[dict]) -> Message:
     """Create a tool result message.
+
+    Content can be a plain string or a list of content blocks (for multimodal
+    tool results, e.g. images). The list format follows OpenAI's convention::
+
+        [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "data:..."}}]
 
     Example::
 
         tool("tc_1", "Search returned 5 results.")
+        tool("tc_1", [{"type": "text", "text": "Here is the image"}, {"type": "image_url", ...}])
     """
     result: ToolResultItem = {
         "type": "tool_result",

@@ -136,11 +136,40 @@ class AnthropicMessagesProvider:
                 tool_results: list[dict] = []
                 for it in items:
                     if isinstance(it, dict) and it.get("type") == "tool_result":
+                        raw_content = it.get("content", "")
+                        if isinstance(raw_content, list):
+                            # Convert OpenAI-style content blocks to Anthropic format
+                            anthropic_blocks: list[dict] = []
+                            for block in raw_content:
+                                if block.get("type") == "text":
+                                    anthropic_blocks.append(block)
+                                elif block.get("type") == "image_url":
+                                    url = block.get("image_url", {}).get("url", "")
+                                    if url.startswith("data:"):
+                                        # data:image/png;base64,... → Anthropic base64 source
+                                        header, _, b64 = url.partition(",")
+                                        media_type = header.split(":")[1].split(";")[0]
+                                        anthropic_blocks.append({
+                                            "type": "image",
+                                            "source": {
+                                                "type": "base64",
+                                                "media_type": media_type,
+                                                "data": b64,
+                                            },
+                                        })
+                                    else:
+                                        anthropic_blocks.append({
+                                            "type": "image",
+                                            "source": {"type": "url", "url": url},
+                                        })
+                            tool_content = anthropic_blocks
+                        else:
+                            tool_content = raw_content
                         tool_results.append(
                             {
                                 "type": "tool_result",
                                 "tool_use_id": it["tool_call_id"],
-                                "content": it.get("content", ""),
+                                "content": tool_content,
                             }
                         )
                 if tool_results:
