@@ -239,6 +239,10 @@ class OpenAIChatCompletionProvider:
                     cache_read_tokens=self._extract_cache_read(chunk.usage),
                     total_tokens=chunk.usage.total_tokens,
                 )
+                # Extract provider-reported cost (e.g. OpenRouter)
+                provider_cost = getattr(chunk.usage, "cost", None)
+                if provider_cost is not None:
+                    store["provider_cost"] = float(provider_cost)
 
             if not chunk.choices:
                 continue
