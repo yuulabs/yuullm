@@ -128,6 +128,8 @@ class PriceCalculator:
                 GPUsage(
                     input_tokens=usage.input_tokens,
                     output_tokens=usage.output_tokens,
+                    cache_read_tokens=usage.cache_read_tokens,
+                    cache_write_tokens=usage.cache_write_tokens,
                 ),
                 model_ref=usage.model,
                 provider_id=usage.provider,
