@@ -89,7 +89,7 @@ class OpenAIChatCompletionProvider:
         for role, items in messages:
             if role == "system":
                 # System messages: concatenate text items
-                text = " ".join(it for it in items if isinstance(it, str))
+                text = "".join(it for it in items if isinstance(it, str))
                 result.append({"role": "system", "content": text})
 
             elif role == "user":
@@ -98,7 +98,7 @@ class OpenAIChatCompletionProvider:
                     result.append(
                         {
                             "role": "user",
-                            "content": " ".join(
+                            "content": "".join(
                                 it for it in items if isinstance(it, str)
                             ),
                         }
@@ -132,7 +132,7 @@ class OpenAIChatCompletionProvider:
                             }
                         )
                 if text_parts:
-                    entry["content"] = " ".join(text_parts)
+                    entry["content"] = "".join(text_parts)
                 if tool_calls:
                     entry["tool_calls"] = tool_calls
                 result.append(entry)

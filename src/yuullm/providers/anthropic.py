@@ -74,7 +74,7 @@ class AnthropicMessagesProvider:
         for role, items in messages:
             if role == "system":
                 # Concatenate text items from system messages
-                text = " ".join(it for it in items if isinstance(it, str))
+                text = "".join(it for it in items if isinstance(it, str))
                 system_text = text
             else:
                 rest.append((role, items))
@@ -98,7 +98,7 @@ class AnthropicMessagesProvider:
                     result.append(
                         {
                             "role": "user",
-                            "content": " ".join(
+                            "content": "".join(
                                 it for it in items if isinstance(it, str)
                             ),
                         }
