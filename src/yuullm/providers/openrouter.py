@@ -13,11 +13,21 @@ from __future__ import annotations
 
 import copy
 import time
+from collections.abc import Sequence
 from typing import Any
 
 from ..cache_config import CacheConfig
 from ..pricing import PriceCalculator
-from ..types import Item, Message, RawChunkHook, StreamResult
+from ..types import (
+    CacheControl,
+    Message,
+    RawChunkHook,
+    StreamResult,
+    is_text_item,
+    is_tool_call_item,
+    to_plain_dict,
+    with_last_item_cache_control,
+)
 from .openai import OpenAIChatCompletionProvider
 
 
@@ -85,7 +95,7 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _convert_messages(messages: list[Message]) -> list[dict]:
+    def _convert_messages(messages: Sequence[Message]) -> list[dict[str, Any]]:
         """Convert messages, preserving ``cache_control`` on content blocks.
 
         OpenRouter forwards ``cache_control`` to upstream vendors, but it
@@ -93,68 +103,91 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
         plain string.  When no ``cache_control`` is present we fall back to
         the compact string format.
         """
-        result: list[dict] = []
-        for role, items in messages:
-            if role == "system":
+        result: list[dict[str, Any]] = []
+        for message in messages:
+            if message[0] == "system":
+                items = message[1]
                 has_cc = any("cache_control" in it for it in items)
                 if has_cc:
-                    result.append({"role": "system", "content": list(items)})
-                else:
-                    text = "".join(
-                        it["text"] for it in items if it.get("type") == "text"
+                    result.append(
+                        {
+                            "role": "system",
+                            "content": [to_plain_dict(item) for item in items],
+                        }
                     )
+                else:
+                    text = "".join(it["text"] for it in items)
                     result.append({"role": "system", "content": text})
 
-            elif role == "user":
+            elif message[0] == "user":
+                items = message[1]
                 has_cc = any("cache_control" in it for it in items)
+                text_parts: list[str] = []
+                all_text = True
+                for item in items:
+                    if is_text_item(item):
+                        text_parts.append(item["text"])
+                    else:
+                        all_text = False
+                        break
                 if has_cc:
-                    result.append({"role": "user", "content": list(items)})
-                elif all(it.get("type") == "text" for it in items):
                     result.append(
-                        {"role": "user", "content": "".join(it["text"] for it in items)}
+                        {
+                            "role": "user",
+                            "content": [to_plain_dict(item) for item in items],
+                        }
                     )
+                elif all_text:
+                    result.append({"role": "user", "content": "".join(text_parts)})
                 else:
-                    result.append({"role": "user", "content": list(items)})
+                    result.append(
+                        {
+                            "role": "user",
+                            "content": [to_plain_dict(item) for item in items],
+                        }
+                    )
 
-            elif role == "assistant":
+            elif message[0] == "assistant":
+                items = message[1]
                 entry: dict[str, Any] = {"role": "assistant"}
                 has_cc = any("cache_control" in it for it in items)
-                text_parts: list = []
-                tool_calls: list[dict] = []
-                for it in items:
-                    if it.get("type") == "text":
-                        text_parts.append(it)
-                    elif it.get("type") == "tool_call":
+                text_blocks: list[dict[str, Any]] = []
+                text_parts: list[str] = []
+                tool_calls: list[dict[str, Any]] = []
+                for item in items:
+                    if is_text_item(item):
+                        text_blocks.append(to_plain_dict(item))
+                        text_parts.append(item["text"])
+                    elif is_tool_call_item(item):
                         tool_calls.append(
                             {
-                                "id": it["id"],
+                                "id": item["id"],
                                 "type": "function",
                                 "function": {
-                                    "name": it["name"],
-                                    "arguments": it.get("arguments", "{}"),
+                                    "name": item["name"],
+                                    "arguments": item["arguments"],
                                 },
                             }
                         )
-                if text_parts:
+                if text_blocks:
                     if has_cc:
-                        entry["content"] = text_parts
+                        entry["content"] = text_blocks
                     else:
-                        entry["content"] = "".join(p["text"] for p in text_parts)
+                        entry["content"] = "".join(text_parts)
                 if tool_calls:
                     entry["tool_calls"] = tool_calls
                 result.append(entry)
 
-            elif role == "tool":
-                for it in items:
-                    if it.get("type") == "tool_result":
-                        content = it.get("content", "")
-                        result.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": it["tool_call_id"],
-                                "content": content,
-                            }
-                        )
+            else:
+                items = message[1]
+                for item in items:
+                    result.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": item["tool_call_id"],
+                            "content": item["content"],
+                        }
+                    )
 
         return result
 
@@ -164,7 +197,7 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
 
     def _apply_cache(
         self,
-        messages: list[Message],
+        messages: Sequence[Message],
         model: str,
         tools: list[dict[str, Any]] | None,
     ) -> list[Message]:
@@ -174,9 +207,9 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
             # OpenRouter translates cache_control breakpoints to Gemini's
             # cachedContent API transparently.  Multiple breakpoints are
             # safe -- OpenRouter uses only the last one for Gemini.
-            cc: dict = {"type": "ephemeral"}
+            cc: CacheControl = {"type": "ephemeral"}
             return self._mark_breakpoints(messages, cc)
-        return messages
+        return list(messages)
 
     # --- Anthropic via OpenRouter -------------------------------------------
 
@@ -185,7 +218,7 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
 
     def _cache_anthropic(
         self,
-        messages: list[Message],
+        messages: Sequence[Message],
         model: str,
         tools: list[dict[str, Any]] | None,
     ) -> list[Message]:
@@ -205,7 +238,7 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
     def _pick_ttl_anthropic(
         self,
         model: str,
-        messages: list[Message],
+        messages: Sequence[Message],
         tools: list[dict[str, Any]] | None,
     ) -> int:
         """Choose the best TTL tier (300s or 3600s) by cost estimation."""
@@ -240,7 +273,7 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
         return best_ttl
 
     @staticmethod
-    def _make_cache_control(ttl: int) -> dict:
+    def _make_cache_control(ttl: int) -> CacheControl:
         """Build the ``cache_control`` dict for a given TTL."""
         if ttl <= 300:
             return {"type": "ephemeral"}
@@ -248,7 +281,7 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
 
     @staticmethod
     def _mark_breakpoints(
-        messages: list[Message], cc: dict
+        messages: Sequence[Message], cc: CacheControl
     ) -> list[Message]:
         """Add cache_control to system-last-block and prefix boundary.
 
@@ -258,15 +291,12 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
         breakpoints_used = 0
         max_breakpoints = 4
 
-        for role, items in messages:
-            if role == "system" and items and breakpoints_used < max_breakpoints:
-                # Mark last block of system message
-                items = [copy.copy(it) for it in items]
-                items[-1] = {**items[-1], "cache_control": cc}
+        for message in messages:
+            if message[0] == "system" and message[1] and breakpoints_used < max_breakpoints:
                 breakpoints_used += 1
-                result.append((role, items))
+                result.append(with_last_item_cache_control(message, cc))
             else:
-                result.append((role, items))
+                result.append(message)
 
         # Mark the last item of the last non-system, non-tool message
         # before the final user turn (the "prefix boundary").
@@ -275,13 +305,11 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
             # Walk backwards to find a good prefix boundary:
             # skip the last message (it's the new user turn)
             for i in range(len(result) - 2, -1, -1):
-                r, its = result[i]
-                if r == "system":
+                message = result[i]
+                if message[0] == "system":
                     continue  # already marked
-                if its:
-                    its = list(its)
-                    its[-1] = {**its[-1], "cache_control": cc}
-                    result[i] = (r, its)
+                if message[1]:
+                    result[i] = with_last_item_cache_control(message, cc)
                     breakpoints_used += 1
                     break
 
@@ -289,7 +317,7 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
 
     @staticmethod
     def _estimate_prefix_tokens(
-        messages: list[Message],
+        messages: Sequence[Message],
         tools: list[dict[str, Any]] | None,
     ) -> int:
         """Rough token estimate for the cacheable prefix.
@@ -299,15 +327,15 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
         """
         char_count = 0
 
-        for i, (role, items) in enumerate(messages):
-            if role == "system":
-                for it in items:
-                    char_count += len(it.get("text", ""))
+        for i, message in enumerate(messages):
+            if message[0] == "system":
+                for it in message[1]:
+                    char_count += len(it["text"])
             elif i < len(messages) - 1:
                 # All messages before the last one are prefix
-                for it in items:
-                    if it.get("type") == "text":
-                        char_count += len(it.get("text", ""))
+                for it in message[1]:
+                    if is_text_item(it):
+                        char_count += len(it["text"])
                     else:
                         char_count += 100  # rough estimate for non-text blocks
 

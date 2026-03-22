@@ -18,6 +18,7 @@ from .pricing import PriceCalculator
 from .provider import Provider
 from .types import (
     AudioItem,
+    CacheControl,
     Cost,
     DictItem,
     FileItem,
@@ -76,6 +77,7 @@ __all__ = [
     "TextItem",
     "ImageItem",
     "AudioItem",
+    "CacheControl",
     "FileItem",
     # Message types & helpers
     "Message",

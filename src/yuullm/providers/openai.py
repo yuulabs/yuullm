@@ -8,7 +8,7 @@ Together, Groq, etc.).
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 import openai
@@ -25,6 +25,8 @@ from ..types import (
     Tick,
     ToolCall,
     Usage,
+    is_text_item,
+    is_tool_call_item,
 )
 
 
@@ -91,7 +93,7 @@ class OpenAIChatCompletionProvider:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _convert_messages(messages: list[Message]) -> list[dict]:
+    def _convert_messages(messages: Sequence[Message]) -> list[dict[str, Any]]:
         """Convert (role, items) tuples to OpenAI chat format.
 
         All items are dicts with a ``type`` key. Dispatch by type:
@@ -100,44 +102,53 @@ class OpenAIChatCompletionProvider:
         - tool_result → tool result messages
         - image_url, input_audio, file → multimodal content blocks
         """
-        result: list[dict] = []
-        for role, items in messages:
-            if role == "system":
-                text = "".join(
-                    it["text"] for it in items if it.get("type") == "text"
-                )
+        result: list[dict[str, Any]] = []
+        for message in messages:
+            if message[0] == "system":
+                items = message[1]
+                text = "".join(it["text"] for it in items)
                 result.append({"role": "system", "content": text})
 
-            elif role == "user":
+            elif message[0] == "user":
+                items = message[1]
                 # If all items are text, use simple string content
-                if all(it.get("type") == "text" for it in items):
+                text_parts: list[str] = []
+                all_text = True
+                for item in items:
+                    if is_text_item(item):
+                        text_parts.append(item["text"])
+                    else:
+                        all_text = False
+                        break
+                if all_text:
                     result.append(
                         {
                             "role": "user",
-                            "content": "".join(
-                                it["text"] for it in items
-                            ),
+                            "content": "".join(text_parts),
                         }
                     )
                 else:
                     # Multimodal: pass content blocks as-is (already dict)
-                    result.append({"role": "user", "content": list(items)})
+                    result.append(
+                        {"role": "user", "content": [dict(item) for item in items]}
+                    )
 
-            elif role == "assistant":
+            elif message[0] == "assistant":
+                items = message[1]
                 entry: dict[str, Any] = {"role": "assistant"}
                 text_parts: list[str] = []
-                tool_calls: list[dict] = []
-                for it in items:
-                    if it.get("type") == "text":
-                        text_parts.append(it["text"])
-                    elif it.get("type") == "tool_call":
+                tool_calls: list[dict[str, Any]] = []
+                for item in items:
+                    if is_text_item(item):
+                        text_parts.append(item["text"])
+                    elif is_tool_call_item(item):
                         tool_calls.append(
                             {
-                                "id": it["id"],
+                                "id": item["id"],
                                 "type": "function",
                                 "function": {
-                                    "name": it["name"],
-                                    "arguments": it.get("arguments", "{}"),
+                                    "name": item["name"],
+                                    "arguments": item["arguments"],
                                 },
                             }
                         )
@@ -147,17 +158,16 @@ class OpenAIChatCompletionProvider:
                     entry["tool_calls"] = tool_calls
                 result.append(entry)
 
-            elif role == "tool":
-                for it in items:
-                    if it.get("type") == "tool_result":
-                        content = it.get("content", "")
-                        result.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": it["tool_call_id"],
-                                "content": content,
-                            }
-                        )
+            else:
+                items = message[1]
+                for item in items:
+                    result.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": item["tool_call_id"],
+                            "content": item["content"],
+                        }
+                    )
 
         return result
 

@@ -5,10 +5,9 @@ This provider uses the Anthropic ``/v1/messages`` endpoint with streaming.
 
 from __future__ import annotations
 
-import copy
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 import anthropic
@@ -16,6 +15,7 @@ import anthropic
 from ..cache_config import CacheConfig
 from ..pricing import PriceCalculator
 from ..types import (
+    CacheControl,
     Message,
     RawChunkHook,
     Reasoning,
@@ -26,6 +26,11 @@ from ..types import (
     Tick,
     ToolCall,
     Usage,
+    is_image_item,
+    is_text_item,
+    is_tool_call_item,
+    to_plain_dict,
+    with_last_item_cache_control,
 )
 
 
@@ -93,99 +98,116 @@ class AnthropicMessagesProvider:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_system(messages: list[Message]) -> tuple[str | None, list[Message]]:
+    def _extract_system(
+        messages: Sequence[Message],
+    ) -> tuple[list[dict[str, Any]] | None, list[Message]]:
         """Separate system messages (Anthropic uses a top-level param).
 
-        Returns the system content as a list of content blocks (for
-        cache_control support) or a plain string, plus the remaining
-        messages.
+        Returns the system content blocks plus the remaining messages.
         """
-        system_blocks: list[dict] | None = None
+        system_blocks: list[dict[str, Any]] | None = None
         rest: list[Message] = []
-        for role, items in messages:
-            if role == "system":
-                system_blocks = list(items)
+        for message in messages:
+            if message[0] == "system":
+                system_blocks = [to_plain_dict(item) for item in message[1]]
             else:
-                rest.append((role, items))
+                rest.append(message)
         return system_blocks, rest
 
     @staticmethod
-    def _convert_messages(messages: list[Message]) -> list[dict]:
+    def _convert_messages(messages: Sequence[Message]) -> list[dict[str, Any]]:
         """Convert (role, items) tuples to Anthropic messages format.
 
         All items are dicts with a ``type`` key. Dispatch by type.
         """
-        result: list[dict] = []
-        for role, items in messages:
-            if role == "user":
+        result: list[dict[str, Any]] = []
+        for message in messages:
+            if message[0] == "user":
+                items = message[1]
                 # If all items are text-only, use simple string content
-                if all(it.get("type") == "text" for it in items):
+                text_parts: list[str] = []
+                all_text = True
+                for item in items:
+                    if is_text_item(item):
+                        text_parts.append(item["text"])
+                    else:
+                        all_text = False
+                        break
+                if all_text:
                     result.append(
                         {
                             "role": "user",
-                            "content": "".join(it["text"] for it in items),
+                            "content": "".join(text_parts),
                         }
                     )
                 else:
-                    result.append({"role": "user", "content": list(items)})
+                    result.append(
+                        {
+                            "role": "user",
+                            "content": [to_plain_dict(item) for item in items],
+                        }
+                    )
 
-            elif role == "assistant":
-                content_blocks: list[dict] = []
-                for it in items:
-                    if it.get("type") == "text":
-                        content_blocks.append(it)
-                    elif it.get("type") == "tool_call":
-                        args = it.get("arguments", "{}")
+            elif message[0] == "assistant":
+                items = message[1]
+                content_blocks: list[dict[str, Any]] = []
+                for item in items:
+                    if is_text_item(item):
+                        content_blocks.append(to_plain_dict(item))
+                    elif is_tool_call_item(item):
+                        args = item["arguments"]
                         content_blocks.append(
                             {
                                 "type": "tool_use",
-                                "id": it["id"],
-                                "name": it["name"],
-                                "input": json.loads(args)
-                                if isinstance(args, str)
-                                else args,
+                                "id": item["id"],
+                                "name": item["name"],
+                                "input": json.loads(args),
                             }
                         )
                 result.append({"role": "assistant", "content": content_blocks})
 
-            elif role == "tool":
-                tool_results: list[dict] = []
-                for it in items:
-                    if it.get("type") == "tool_result":
-                        raw_content = it.get("content", "")
-                        if isinstance(raw_content, list):
-                            anthropic_blocks: list[dict] = []
-                            for block in raw_content:
-                                if block.get("type") == "text":
-                                    anthropic_blocks.append(block)
-                                elif block.get("type") == "image_url":
-                                    url = block.get("image_url", {}).get("url", "")
-                                    if url.startswith("data:"):
-                                        header, _, b64 = url.partition(",")
-                                        media_type = header.split(":")[1].split(";")[0]
-                                        anthropic_blocks.append({
+            elif message[0] == "tool":
+                items = message[1]
+                tool_results: list[dict[str, Any]] = []
+                for item in items:
+                    raw_content = item["content"]
+                    if isinstance(raw_content, list):
+                        anthropic_blocks: list[dict[str, Any]] = []
+                        for block in raw_content:
+                            if is_text_item(block):
+                                anthropic_blocks.append(to_plain_dict(block))
+                            elif is_image_item(block):
+                                url = block["image_url"].get("url", "")
+                                if url.startswith("data:"):
+                                    header, _, b64 = url.partition(",")
+                                    media_type = header.split(":")[1].split(";")[0]
+                                    anthropic_blocks.append(
+                                        {
                                             "type": "image",
                                             "source": {
                                                 "type": "base64",
                                                 "media_type": media_type,
                                                 "data": b64,
                                             },
-                                        })
-                                    else:
-                                        anthropic_blocks.append({
+                                        }
+                                    )
+                                else:
+                                    anthropic_blocks.append(
+                                        {
                                             "type": "image",
                                             "source": {"type": "url", "url": url},
-                                        })
-                            tool_content = anthropic_blocks
-                        else:
-                            tool_content = raw_content
-                        tool_results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": it["tool_call_id"],
-                                "content": tool_content,
-                            }
-                        )
+                                        }
+                                    )
+                        tool_content: str | list[dict[str, Any]] = anthropic_blocks
+                    else:
+                        tool_content = raw_content
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": item["tool_call_id"],
+                            "content": tool_content,
+                        }
+                    )
                 if tool_results:
                     result.append({"role": "user", "content": tool_results})
 
@@ -262,7 +284,9 @@ class AnthropicMessagesProvider:
     # Cache injection (direct Anthropic)
     # ------------------------------------------------------------------
 
-    def _pick_ttl(self, model: str, messages: list[Message], tools: list[dict] | None) -> int:
+    def _pick_ttl(
+        self, model: str, messages: Sequence[Message], tools: list[dict] | None
+    ) -> int:
         """Choose TTL tier by cost estimation. Fallback: 300s."""
         if self._price_calc is None or self._cache_config is None:
             return 300
@@ -295,13 +319,13 @@ class AnthropicMessagesProvider:
         return best_ttl
 
     @staticmethod
-    def _make_cache_control(ttl: int) -> dict:
+    def _make_cache_control(ttl: int) -> CacheControl:
         if ttl <= 300:
             return {"type": "ephemeral"}
         return {"type": "ephemeral", "ttl": ttl}
 
     def _inject_cache(
-        self, messages: list[Message], model: str, tools: list[dict] | None
+        self, messages: Sequence[Message], model: str, tools: list[dict] | None
     ) -> list[Message]:
         """Add cache_control breakpoints to system last block and prefix boundary."""
         ttl = self._pick_ttl(model, messages, tools)
@@ -310,25 +334,21 @@ class AnthropicMessagesProvider:
         result: list[Message] = []
         breakpoints = 0
 
-        for role, items in messages:
-            if role == "system" and items and breakpoints < 4:
-                items = [copy.copy(it) for it in items]
-                items[-1] = {**items[-1], "cache_control": cc}
+        for message in messages:
+            if message[0] == "system" and message[1] and breakpoints < 4:
                 breakpoints += 1
-                result.append((role, items))
+                result.append(with_last_item_cache_control(message, cc))
             else:
-                result.append((role, items))
+                result.append(message)
 
         # Mark prefix boundary (last message before the final user turn)
         if breakpoints < 4 and len(result) >= 2:
             for i in range(len(result) - 2, -1, -1):
-                r, its = result[i]
-                if r == "system":
+                message = result[i]
+                if message[0] == "system":
                     continue
-                if its:
-                    its = list(its)
-                    its[-1] = {**its[-1], "cache_control": cc}
-                    result[i] = (r, its)
+                if message[1]:
+                    result[i] = with_last_item_cache_control(message, cc)
                     break
 
         return result
@@ -347,18 +367,18 @@ class AnthropicMessagesProvider:
 
     @staticmethod
     def _estimate_prefix_tokens(
-        messages: list[Message], tools: list[dict] | None
+        messages: Sequence[Message], tools: list[dict] | None
     ) -> int:
         """Rough token estimate: 4 chars ≈ 1 token."""
         char_count = 0
-        for i, (role, items) in enumerate(messages):
-            if role == "system":
-                for it in items:
-                    char_count += len(it.get("text", ""))
+        for i, message in enumerate(messages):
+            if message[0] == "system":
+                for it in message[1]:
+                    char_count += len(it["text"])
             elif i < len(messages) - 1:
-                for it in items:
-                    if it.get("type") == "text":
-                        char_count += len(it.get("text", ""))
+                for it in message[1]:
+                    if is_text_item(it):
+                        char_count += len(it["text"])
                     else:
                         char_count += 100
         if tools:
@@ -374,9 +394,8 @@ class AnthropicMessagesProvider:
         on_raw_chunk: RawChunkHook | None = None,
     ) -> AsyncIterator[StreamItem]:
         # Accumulate tool calls by block index
-        tool_calls_acc: dict[int, dict] = {}
+        tool_calls_acc: dict[int, dict[str, str]] = {}
         current_block_index: int = -1
-        current_block_type: str = ""
         request_id: str | None = None
 
         async with self._client.messages.stream(**create_kwargs) as stream:
@@ -384,62 +403,69 @@ class AnthropicMessagesProvider:
                 if on_raw_chunk is not None:
                     on_raw_chunk(event)
 
-                match event.type:
-                    case "message_start":
-                        msg = event.message
-                        request_id = msg.id
-                    case "content_block_start":
-                        current_block_index = event.index
-                        block = event.content_block
-                        current_block_type = block.type
-                        if block.type == "tool_use":
+                event_type = getattr(event, "type", None)
+                if event_type == "message_start":
+                    msg = getattr(event, "message", None)
+                    msg_id = getattr(msg, "id", None)
+                    if isinstance(msg_id, str):
+                        request_id = msg_id
+                elif event_type == "content_block_start":
+                    index = getattr(event, "index", None)
+                    block = getattr(event, "content_block", None)
+                    if not isinstance(index, int) or block is None:
+                        continue
+                    current_block_index = index
+                    if getattr(block, "type", None) == "tool_use":
+                        block_id = getattr(block, "id", None)
+                        block_name = getattr(block, "name", None)
+                        if isinstance(block_id, str) and isinstance(block_name, str):
                             tool_calls_acc[current_block_index] = {
-                                "id": block.id,
-                                "name": block.name,
+                                "id": block_id,
+                                "name": block_name,
                                 "arguments": "",
                             }
-                    case "content_block_delta":
-                        delta = event.delta
-                        match delta.type:
-                            case "thinking_delta":
-                                yield Reasoning(item={"type": "text", "text": delta.thinking})
-                            case "text_delta":
-                                yield Response(item={"type": "text", "text": delta.text})
-                            case "input_json_delta":
-                                if current_block_index in tool_calls_acc:
-                                    tool_calls_acc[current_block_index][
-                                        "arguments"
-                                    ] += delta.partial_json
-                                # Keep the consumer loop spinning so
-                                # on_raw_chunk side-effects can be flushed.
-                                if on_raw_chunk is not None:
-                                    yield Tick()
-                    case "content_block_stop":
-                        if current_block_index in tool_calls_acc:
-                            acc = tool_calls_acc.pop(current_block_index)
-                            yield ToolCall(
-                                id=acc["id"],
-                                name=acc["name"],
-                                arguments=acc["arguments"],
-                            )
-                    case "message_delta":
-                        pass  # stop_reason, etc.
+                elif event_type == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    delta_type = getattr(delta, "type", None)
+                    if delta_type == "thinking_delta":
+                        thinking = getattr(delta, "thinking", None)
+                        if isinstance(thinking, str):
+                            yield Reasoning(item={"type": "text", "text": thinking})
+                    elif delta_type == "text_delta":
+                        text = getattr(delta, "text", None)
+                        if isinstance(text, str):
+                            yield Response(item={"type": "text", "text": text})
+                    elif delta_type == "input_json_delta":
+                        partial_json = getattr(delta, "partial_json", None)
+                        if (
+                            current_block_index in tool_calls_acc
+                            and isinstance(partial_json, str)
+                        ):
+                            tool_calls_acc[current_block_index]["arguments"] += partial_json
+                        if on_raw_chunk is not None:
+                            yield Tick()
+                elif event_type == "content_block_stop":
+                    acc = tool_calls_acc.pop(current_block_index, None)
+                    if acc is not None:
+                        yield ToolCall(
+                            id=acc["id"],
+                            name=acc["name"],
+                            arguments=acc["arguments"],
+                        )
 
             # Extract usage from the final message
-            final_message = stream.get_final_message()
+            final_message = await stream.get_final_message()
+
+        usage = getattr(final_message, "usage", None)
 
         store.usage = Usage(
             provider=self._provider_name,
-            model=final_message.model or model,
+            model=getattr(final_message, "model", None) or model,
             request_id=request_id,
-            input_tokens=final_message.usage.input_tokens,
-            output_tokens=final_message.usage.output_tokens,
-            cache_read_tokens=getattr(final_message.usage, "cache_read_input_tokens", 0)
-            or 0,
-            cache_write_tokens=getattr(
-                final_message.usage, "cache_creation_input_tokens", 0
-            )
-            or 0,
+            input_tokens=getattr(usage, "input_tokens", 0) or 0,
+            output_tokens=getattr(usage, "output_tokens", 0) or 0,
+            cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+            cache_write_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
         )
 
 

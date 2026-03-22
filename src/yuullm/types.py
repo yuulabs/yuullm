@@ -9,7 +9,7 @@ the OpenAI API format.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from typing import Any, Literal, Required, TypedDict
+from typing import Any, Literal, Required, TypeGuard, TypedDict, overload
 
 import msgspec
 
@@ -19,7 +19,18 @@ import msgspec
 # ---------------------------------------------------------------------------
 
 
-class ToolCallItem(TypedDict):
+class CacheControl(TypedDict, total=False):
+    """Provider-specific prompt-cache metadata attached to a content block."""
+
+    type: Required[Literal["ephemeral"]]
+    ttl: int
+
+
+class _CacheAnnotated(TypedDict, total=False):
+    cache_control: CacheControl
+
+
+class ToolCallItem(_CacheAnnotated):
     """A tool invocation embedded in an assistant message."""
 
     type: Literal["tool_call"]
@@ -27,16 +38,7 @@ class ToolCallItem(TypedDict):
     name: str
     arguments: str  # raw JSON string
 
-
-class ToolResultItem(TypedDict):
-    """A tool execution result embedded in a tool message."""
-
-    type: Literal["tool_result"]
-    tool_call_id: str
-    content: str | list[dict]
-
-
-class TextItem(TypedDict):
+class TextItem(_CacheAnnotated):
     """A text content block."""
 
     type: Literal["text"]
@@ -48,11 +50,22 @@ class _ImageURL(TypedDict, total=False):
     detail: Literal["auto", "low", "high"]
 
 
-class ImageItem(TypedDict):
+class ImageItem(_CacheAnnotated):
     """An image content block (URL or base64)."""
 
     type: Literal["image_url"]
     image_url: _ImageURL
+
+
+ToolResultContentItem = TextItem | ImageItem
+
+
+class ToolResultItem(_CacheAnnotated):
+    """A tool execution result embedded in a tool message."""
+
+    type: Literal["tool_result"]
+    tool_call_id: str
+    content: str | list[ToolResultContentItem]
 
 
 class _InputAudio(TypedDict, total=False):
@@ -60,7 +73,7 @@ class _InputAudio(TypedDict, total=False):
     format: Required[Literal["wav", "mp3"]]
 
 
-class AudioItem(TypedDict):
+class AudioItem(_CacheAnnotated):
     """An audio input content block."""
 
     type: Literal["input_audio"]
@@ -73,7 +86,7 @@ class _FileData(TypedDict, total=False):
     filename: str
 
 
-class FileItem(TypedDict):
+class FileItem(_CacheAnnotated):
     """A file content block."""
 
     type: Literal["file"]
@@ -82,6 +95,8 @@ class FileItem(TypedDict):
 
 # The union of all structured content items.
 DictItem = ToolCallItem | ToolResultItem | TextItem | ImageItem | AudioItem | FileItem
+UserItem = TextItem | ImageItem | AudioItem | FileItem
+AssistantItem = TextItem | ToolCallItem
 
 # A content item is always a structured dict.
 # str was previously allowed but is now removed -- use TextItem instead.
@@ -138,10 +153,12 @@ class Tick(msgspec.Struct, frozen=True):
 
 StreamItem = Reasoning | ToolCall | Response | Tick
 
-# Message = (role, items)
-# role: "system" | "user" | "assistant" | "tool"
-# items: list of content items
-Message = tuple[str, list[Item]]
+Role = Literal["system", "user", "assistant", "tool"]
+SystemMessage = tuple[Literal["system"], list[TextItem]]
+UserMessage = tuple[Literal["user"], list[UserItem]]
+AssistantMessage = tuple[Literal["assistant"], list[AssistantItem]]
+ToolMessage = tuple[Literal["tool"], list[ToolResultItem]]
+Message = SystemMessage | UserMessage | AssistantMessage | ToolMessage
 
 # History is just a list of messages
 History = list[Message]
@@ -152,6 +169,14 @@ History = list[Message]
 # ---------------------------------------------------------------------------
 
 
+@overload
+def _to_item(it: str) -> TextItem: ...
+
+
+@overload
+def _to_item(it: DictItem) -> DictItem: ...
+
+
 def _to_item(it: str | DictItem) -> Item:
     """Convert a str to TextItem; pass dicts through."""
     if isinstance(it, str):
@@ -159,12 +184,31 @@ def _to_item(it: str | DictItem) -> Item:
     return it
 
 
-def system(content: str) -> Message:
+def _to_user_item(it: str | UserItem) -> UserItem:
+    item = _to_item(it)
+    if (
+        is_text_item(item)
+        or is_image_item(item)
+        or is_audio_item(item)
+        or is_file_item(item)
+    ):
+        return item
+    raise TypeError("user() only accepts text, image, audio, and file items")
+
+
+def _to_assistant_item(it: str | AssistantItem) -> AssistantItem:
+    item = _to_item(it)
+    if is_text_item(item) or is_tool_call_item(item):
+        return item
+    raise TypeError("assistant() only accepts text and tool-call items")
+
+
+def system(content: str) -> SystemMessage:
     """Create a system message."""
     return ("system", [{"type": "text", "text": content}])
 
 
-def user(*items: str | DictItem) -> Message:
+def user(*items: str | UserItem) -> UserMessage:
     """Create a user message with one or more content items.
 
     Examples::
@@ -172,10 +216,10 @@ def user(*items: str | DictItem) -> Message:
         user("Hello!")
         user("What is this?", ImageItem(type="image_url", image_url={"url": "..."}))
     """
-    return ("user", [_to_item(it) for it in items])
+    return ("user", [_to_user_item(it) for it in items])
 
 
-def assistant(*items: str | DictItem) -> Message:
+def assistant(*items: str | AssistantItem) -> AssistantMessage:
     """Create an assistant message.
 
     Examples::
@@ -188,10 +232,10 @@ def assistant(*items: str | DictItem) -> Message:
             arguments='{"q": "test"}',
         ))
     """
-    return ("assistant", [_to_item(it) for it in items])
+    return ("assistant", [_to_assistant_item(it) for it in items])
 
 
-def tool(tool_call_id: str, content: str | list[dict]) -> Message:
+def tool(tool_call_id: str, content: str | list[TextItem | ImageItem]) -> ToolMessage:
     """Create a tool result message.
 
     Content can be a plain string or a list of content blocks (for multimodal
@@ -210,6 +254,183 @@ def tool(tool_call_id: str, content: str | list[dict]) -> Message:
         "content": content,
     }
     return ("tool", [result])
+
+
+def is_text_item(item: DictItem) -> TypeGuard[TextItem]:
+    return item["type"] == "text"
+
+
+def is_tool_call_item(item: DictItem) -> TypeGuard[ToolCallItem]:
+    return item["type"] == "tool_call"
+
+
+def is_tool_result_item(item: DictItem) -> TypeGuard[ToolResultItem]:
+    return item["type"] == "tool_result"
+
+
+def is_image_item(item: DictItem) -> TypeGuard[ImageItem]:
+    return item["type"] == "image_url"
+
+
+def is_audio_item(item: DictItem) -> TypeGuard[AudioItem]:
+    return item["type"] == "input_audio"
+
+
+def is_file_item(item: DictItem) -> TypeGuard[FileItem]:
+    return item["type"] == "file"
+
+
+@overload
+def with_cache_control(item: ToolCallItem, cache_control: CacheControl) -> ToolCallItem: ...
+
+
+@overload
+def with_cache_control(item: ToolResultItem, cache_control: CacheControl) -> ToolResultItem: ...
+
+
+@overload
+def with_cache_control(item: TextItem, cache_control: CacheControl) -> TextItem: ...
+
+
+@overload
+def with_cache_control(item: ImageItem, cache_control: CacheControl) -> ImageItem: ...
+
+
+@overload
+def with_cache_control(item: AudioItem, cache_control: CacheControl) -> AudioItem: ...
+
+
+@overload
+def with_cache_control(item: FileItem, cache_control: CacheControl) -> FileItem: ...
+
+
+def with_cache_control(item: DictItem, cache_control: CacheControl) -> DictItem:
+    """Return a copy of *item* with provider cache metadata attached."""
+    if is_text_item(item):
+        return {
+            "type": "text",
+            "text": item["text"],
+            "cache_control": cache_control,
+        }
+    if is_tool_call_item(item):
+        return {
+            "type": "tool_call",
+            "id": item["id"],
+            "name": item["name"],
+            "arguments": item["arguments"],
+            "cache_control": cache_control,
+        }
+    if is_tool_result_item(item):
+        return {
+            "type": "tool_result",
+            "tool_call_id": item["tool_call_id"],
+            "content": item["content"],
+            "cache_control": cache_control,
+        }
+    if is_image_item(item):
+        return {
+            "type": "image_url",
+            "image_url": item["image_url"],
+            "cache_control": cache_control,
+        }
+    if is_audio_item(item):
+        return {
+            "type": "input_audio",
+            "input_audio": item["input_audio"],
+            "cache_control": cache_control,
+        }
+    if is_file_item(item):
+        return {
+            "type": "file",
+            "file": item["file"],
+            "cache_control": cache_control,
+        }
+    raise AssertionError(f"Unsupported item type: {item['type']}")
+
+
+def to_plain_dict(item: DictItem) -> dict[str, Any]:
+    """Convert a TypedDict item into a plain dict for provider SDK payloads."""
+    result: dict[str, Any]
+    if is_text_item(item):
+        result = {"type": "text", "text": item["text"]}
+    elif is_tool_call_item(item):
+        result = {
+            "type": "tool_call",
+            "id": item["id"],
+            "name": item["name"],
+            "arguments": item["arguments"],
+        }
+    elif is_tool_result_item(item):
+        result = {
+            "type": "tool_result",
+            "tool_call_id": item["tool_call_id"],
+            "content": item["content"],
+        }
+    elif is_image_item(item):
+        result = {
+            "type": "image_url",
+            "image_url": dict(item["image_url"]),
+        }
+    elif is_audio_item(item):
+        result = {
+            "type": "input_audio",
+            "input_audio": dict(item["input_audio"]),
+        }
+    elif is_file_item(item):
+        result = {
+            "type": "file",
+            "file": dict(item["file"]),
+        }
+    else:
+        raise AssertionError(f"Unsupported item type: {item['type']}")
+    if "cache_control" in item:
+        result["cache_control"] = dict(item["cache_control"])
+    return result
+
+
+@overload
+def with_last_item_cache_control(
+    message: SystemMessage, cache_control: CacheControl
+) -> SystemMessage: ...
+
+
+@overload
+def with_last_item_cache_control(
+    message: UserMessage, cache_control: CacheControl
+) -> UserMessage: ...
+
+
+@overload
+def with_last_item_cache_control(
+    message: AssistantMessage, cache_control: CacheControl
+) -> AssistantMessage: ...
+
+
+@overload
+def with_last_item_cache_control(
+    message: ToolMessage, cache_control: CacheControl
+) -> ToolMessage: ...
+
+
+def with_last_item_cache_control(
+    message: Message, cache_control: CacheControl
+) -> Message:
+    """Return a copy of *message* with cache metadata on its final item."""
+    if message[0] == "system":
+        items = list(message[1])
+        items[-1] = with_cache_control(items[-1], cache_control)
+        return ("system", items)
+    if message[0] == "user":
+        items = list(message[1])
+        items[-1] = with_cache_control(items[-1], cache_control)
+        return ("user", items)
+    if message[0] == "assistant":
+        items = list(message[1])
+        items[-1] = with_cache_control(items[-1], cache_control)
+        return ("assistant", items)
+    items = list(message[1])
+    items[-1] = with_cache_control(items[-1], cache_control)
+    return ("tool", items)
 
 
 # ---------------------------------------------------------------------------

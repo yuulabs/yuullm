@@ -9,10 +9,13 @@ from unittest.mock import patch
 import pytest
 
 from yuullm import (
+    CacheControl,
     CacheConfig,
     ConstantRate,
     Cost,
+    Message,
     PriceCalculator,
+    TextItem,
     TrafficEstimator,
     system,
     user,
@@ -372,13 +375,13 @@ class TestOpenRouterProvider:
 
     def test_mark_breakpoints_prefix_boundary(self):
         """Should mark system last block + prefix boundary."""
-        cc = {"type": "ephemeral"}
         messages = [
             system("System prompt"),
             user("Turn 1"),
             assistant("Response 1"),
             user("Turn 2"),
         ]
+        cc: CacheControl = {"type": "ephemeral"}
         result = OpenRouterProvider._mark_breakpoints(messages, cc)
 
         # System last block marked
@@ -466,8 +469,13 @@ class TestConvertMessagesWithCacheControl:
 
     def test_system_with_cache_control_uses_array(self):
         """System message with cache_control must use content array format."""
-        messages = [
-            ("system", [{"type": "text", "text": "You are helpful.", "cache_control": {"type": "ephemeral"}}]),
+        text_item: TextItem = {
+            "type": "text",
+            "text": "You are helpful.",
+            "cache_control": {"type": "ephemeral"},
+        }
+        messages: list[Message] = [
+            ("system", [text_item]),
         ]
         result = OpenRouterProvider._convert_messages(messages)
         assert result[0]["role"] == "system"
@@ -477,17 +485,18 @@ class TestConvertMessagesWithCacheControl:
 
     def test_system_without_cache_control_uses_string(self):
         """System message without cache_control should use plain string."""
-        messages = [
-            ("system", [{"type": "text", "text": "You are helpful."}]),
+        text_item: TextItem = {"type": "text", "text": "You are helpful."}
+        messages: list[Message] = [
+            ("system", [text_item]),
         ]
         result = OpenRouterProvider._convert_messages(messages)
         assert result[0]["content"] == "You are helpful."
 
     def test_user_with_cache_control_uses_array(self):
         """User message with cache_control must use content array format."""
-        messages = [
-            ("user", [{"type": "text", "text": "Hello!", "cache_control": {"type": "ephemeral"}}]),
-        ]
+        message = user("Hello!")
+        message[1][0]["cache_control"] = {"type": "ephemeral"}
+        messages: list[Message] = [message]
         result = OpenRouterProvider._convert_messages(messages)
         content = result[0]["content"]
         assert isinstance(content, list)
@@ -495,17 +504,15 @@ class TestConvertMessagesWithCacheControl:
 
     def test_user_without_cache_control_uses_string(self):
         """User text-only message without cache_control should use plain string."""
-        messages = [
-            ("user", [{"type": "text", "text": "Hello!"}]),
-        ]
+        messages: list[Message] = [user("Hello!")]
         result = OpenRouterProvider._convert_messages(messages)
         assert result[0]["content"] == "Hello!"
 
     def test_assistant_with_cache_control_uses_array(self):
         """Assistant text with cache_control must use content array format."""
-        messages = [
-            ("assistant", [{"type": "text", "text": "Sure!", "cache_control": {"type": "ephemeral"}}]),
-        ]
+        message = assistant("Sure!")
+        message[1][0]["cache_control"] = {"type": "ephemeral"}
+        messages: list[Message] = [message]
         result = OpenRouterProvider._convert_messages(messages)
         content = result[0]["content"]
         assert isinstance(content, list)
