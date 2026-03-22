@@ -12,6 +12,7 @@ from .types import (
     Cost,
     Message,
     RawChunkHook,
+    Store,
     StreamItem,
     StreamResult,
     Usage,
@@ -74,10 +75,10 @@ class YLLMClient:
         """Start a streaming completion.
 
         After the returned async iterator is fully consumed the *store*
-        dict will contain:
+        will contain:
 
-        - ``"usage"`` -- :class:`Usage`
-        - ``"cost"``  -- :class:`Cost` | ``None``
+        - ``usage`` -- :class:`Usage`
+        - ``cost``  -- :class:`Cost` | ``None``
         """
         effective_model = model or self.default_model
         effective_tools = tools if tools is not None else self.tools
@@ -96,22 +97,18 @@ class YLLMClient:
     async def _wrap_iterator(
         self,
         iterator: AsyncIterator[StreamItem],
-        store: dict,
+        store: Store,
     ) -> AsyncIterator[StreamItem]:
         """Yield items from the provider, then compute cost."""
         async for item in iterator:
             yield item
 
         # After stream is exhausted, compute cost
-        usage: Usage | None = store.get("usage")
-        if usage is not None and self.price_calculator is not None:
-            provider_cost: float | None = store.get("provider_cost")
+        if store.usage is not None and self.price_calculator is not None:
             cost: Cost | None = self.price_calculator.calculate(
-                usage, provider_cost=provider_cost
+                store.usage, provider_cost=store.provider_cost
             )
-            store["cost"] = cost
-        else:
-            store.setdefault("cost", None)
+            store.cost = cost
 
 
 def _inject_cache_config(
@@ -119,13 +116,12 @@ def _inject_cache_config(
     config: CacheConfig,
     price_calc: PriceCalculator | None,
 ) -> None:
-    """Set cache_config / price_calculator on providers that support them.
+    """Configure prompt caching on providers that support it.
 
-    This is a duck-typing approach: if the provider has the attribute,
-    set it.  No-op for providers that don't (e.g. DeepSeek via
+    Providers opt in by exposing a public ``configure_cache`` method.
+    No-op for providers that don't (e.g. DeepSeek via
     OpenAIChatCompletionProvider with provider_name="deepseek").
     """
-    if hasattr(provider, "_cache_config") and provider._cache_config is None:
-        provider._cache_config = config
-    if hasattr(provider, "_price_calc") and provider._price_calc is None and price_calc is not None:
-        provider._price_calc = price_calc
+    configure = getattr(provider, "configure_cache", None)
+    if configure is not None:
+        configure(config, price_calc)

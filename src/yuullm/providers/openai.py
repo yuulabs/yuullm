@@ -68,6 +68,15 @@ class OpenAIChatCompletionProvider:
         self._provider_name = provider_name
         self._cache_config = cache_config
 
+    def configure_cache(
+        self,
+        cache_config: CacheConfig,
+        price_calculator: Any | None = None,
+    ) -> None:
+        """Enable prompt caching (OpenAI automatic caching)."""
+        if self._cache_config is None:
+            self._cache_config = cache_config
+
     @property
     def api_type(self) -> str:
         return "openai-chat-completion"

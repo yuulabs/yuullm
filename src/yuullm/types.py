@@ -96,11 +96,10 @@ Item = DictItem
 class Reasoning(msgspec.Struct, frozen=True):
     """A fragment of the model's chain-of-thought / extended thinking.
 
-    The content can be plain text (str) or multimodal content (dict),
-    depending on the model's output format.
+    The content is always plain thinking text.
     """
 
-    item: Item
+    item: str
 
 
 class ToolCall(msgspec.Struct, frozen=True):
@@ -244,13 +243,12 @@ class Cost(msgspec.Struct, frozen=True):
 # Type alias for the stream return
 # ---------------------------------------------------------------------------
 
-Store = dict
-"""Mutable dict populated after the stream is exhausted.
+class Store(msgspec.Struct):
+    """Mutable metadata populated after the stream is exhausted."""
 
-Expected keys (set by the framework):
-    ``"usage"``  – :class:`Usage`
-    ``"cost"``   – :class:`Cost` | ``None``
-"""
+    usage: Usage | None = None
+    cost: Cost | None = None
+    provider_cost: float | None = None
 
 StreamResult = tuple[AsyncIterator[StreamItem], Store]
 """Return type of ``Provider.stream()`` and ``YLLMClient.stream()``."""

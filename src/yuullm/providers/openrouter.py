@@ -49,6 +49,17 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
         self._cache_config = cache_config
         self._price_calc = price_calculator
 
+    def configure_cache(
+        self,
+        cache_config: CacheConfig,
+        price_calculator: PriceCalculator | None = None,
+    ) -> None:
+        """Enable sub-vendor cache routing."""
+        if self._cache_config is None:
+            self._cache_config = cache_config
+        if self._price_calc is None and price_calculator is not None:
+            self._price_calc = price_calculator
+
     # ------------------------------------------------------------------
     # Stream override: inject cache markers before calling parent
     # ------------------------------------------------------------------

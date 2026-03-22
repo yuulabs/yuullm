@@ -68,6 +68,17 @@ class AnthropicMessagesProvider:
         self._cache_config = cache_config
         self._price_calc = price_calculator
 
+    def configure_cache(
+        self,
+        cache_config: CacheConfig,
+        price_calculator: PriceCalculator | None = None,
+    ) -> None:
+        """Enable automatic cache breakpoint injection."""
+        if self._cache_config is None:
+            self._cache_config = cache_config
+        if self._price_calc is None and price_calculator is not None:
+            self._price_calc = price_calculator
+
     @property
     def api_type(self) -> str:
         return "anthropic-messages"
