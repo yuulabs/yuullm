@@ -12,7 +12,6 @@ from .types import (
     Cost,
     Message,
     RawChunkHook,
-    Store,
     StreamItem,
     StreamResult,
     Usage,
@@ -75,10 +74,10 @@ class YLLMClient:
         """Start a streaming completion.
 
         After the returned async iterator is fully consumed the *store*
-        will contain:
+        dict will contain:
 
-        - ``usage`` -- :class:`Usage`
-        - ``cost``  -- :class:`Cost` | ``None``
+        - ``"usage"`` -- :class:`Usage`
+        - ``"cost"``  -- :class:`Cost` | ``None``
         """
         effective_model = model or self.default_model
         effective_tools = tools if tools is not None else self.tools
@@ -97,18 +96,22 @@ class YLLMClient:
     async def _wrap_iterator(
         self,
         iterator: AsyncIterator[StreamItem],
-        store: Store,
+        store: dict,
     ) -> AsyncIterator[StreamItem]:
         """Yield items from the provider, then compute cost."""
         async for item in iterator:
             yield item
 
         # After stream is exhausted, compute cost
-        if store.usage is not None and self.price_calculator is not None:
+        usage: Usage | None = store.get("usage")
+        if usage is not None and self.price_calculator is not None:
+            provider_cost: float | None = store.get("provider_cost")
             cost: Cost | None = self.price_calculator.calculate(
-                store.usage, provider_cost=store.provider_cost
+                usage, provider_cost=provider_cost
             )
-            store.cost = cost
+            store["cost"] = cost
+        else:
+            store.setdefault("cost", None)
 
 
 def _inject_cache_config(
