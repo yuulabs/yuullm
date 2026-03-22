@@ -24,8 +24,8 @@ from yuullm import (
 
 class TestStreamItems:
     def test_reasoning(self):
-        r = Reasoning(item="thinking...")
-        assert r.item == "thinking..."
+        r = Reasoning(item={"type": "text", "text": "thinking..."})
+        assert r.item == {"type": "text", "text": "thinking..."}
 
     def test_response(self):
         r = Response(item={"type": "text", "text": "hello"})
@@ -38,9 +38,9 @@ class TestStreamItems:
         assert tc.arguments == '{"q": "test"}'
 
     def test_frozen(self):
-        r = Reasoning(item="x")
+        r = Reasoning(item={"type": "text", "text": "x"})
         try:
-            r.item = "y"  # type: ignore[misc]
+            r.item = {"type": "text", "text": "y"}  # type: ignore[misc]
             assert False, "Should be frozen"
         except AttributeError:
             pass

@@ -20,6 +20,7 @@ from ..types import (
     RawChunkHook,
     Reasoning,
     Response,
+    Store,
     StreamItem,
     StreamResult,
     Tick,
@@ -233,7 +234,7 @@ class AnthropicMessagesProvider:
         on_raw_chunk: RawChunkHook | None = None,
         **kwargs,
     ) -> StreamResult:
-        store: dict = {}
+        store = Store()
 
         # Inject cache breakpoints if cache_config is set
         if self._cache_config is not None:
@@ -369,7 +370,7 @@ class AnthropicMessagesProvider:
         self,
         create_kwargs: dict,
         model: str,
-        store: dict,
+        store: Store,
         on_raw_chunk: RawChunkHook | None = None,
     ) -> AsyncIterator[StreamItem]:
         # Accumulate tool calls by block index
@@ -401,7 +402,7 @@ class AnthropicMessagesProvider:
                         delta = event.delta
                         match delta.type:
                             case "thinking_delta":
-                                yield Reasoning(item=delta.thinking)
+                                yield Reasoning(item={"type": "text", "text": delta.thinking})
                             case "text_delta":
                                 yield Response(item={"type": "text", "text": delta.text})
                             case "input_json_delta":
@@ -427,7 +428,7 @@ class AnthropicMessagesProvider:
             # Extract usage from the final message
             final_message = stream.get_final_message()
 
-        store["usage"] = Usage(
+        store.usage = Usage(
             provider=self._provider_name,
             model=final_message.model or model,
             request_id=request_id,
@@ -440,7 +441,6 @@ class AnthropicMessagesProvider:
             )
             or 0,
         )
-        store.setdefault("provider_cost", None)
 
 
 # Backward-compatible alias (deprecated)

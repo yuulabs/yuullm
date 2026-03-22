@@ -96,10 +96,12 @@ Item = DictItem
 class Reasoning(msgspec.Struct, frozen=True):
     """A fragment of the model's chain-of-thought / extended thinking.
 
-    The content is always plain thinking text.
+    The content is always a content dict — typically a ``TextItem``
+    (``{"type": "text", "text": "..."}``).  This mirrors :class:`Response`,
+    which also carries an ``Item``.
     """
 
-    item: str
+    item: Item
 
 
 class ToolCall(msgspec.Struct, frozen=True):

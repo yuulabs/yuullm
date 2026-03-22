@@ -11,6 +11,7 @@ from yuullm import (
     PriceCalculator,
     Reasoning,
     Response,
+    Store,
     ToolCall,
     ToolCallItem,
     Usage,
@@ -45,13 +46,12 @@ class FakeProvider:
         return "fake"
 
     async def stream(self, messages, *, model, tools=None, **kwargs):
-        store: dict = {}
+        store = Store()
 
         async def _iter() -> AsyncIterator:
             for item in self._items:
                 yield item
-            store["usage"] = self._usage
-            store["provider_cost"] = None
+            store.usage = self._usage
 
         return _iter(), store
 
@@ -77,13 +77,13 @@ class TestYLLMClient:
         assert len(collected) == 2
         assert collected[0] == Response(item={"type": "text", "text": "Hello"})
         assert collected[1] == Response(item={"type": "text", "text": " world"})
-        assert store["usage"] == usage
-        assert store["cost"] is None  # no price calculator
+        assert store.usage == usage
+        assert store.cost is None  # no price calculator
 
     @pytest.mark.asyncio
     async def test_stream_with_reasoning_and_tool_calls(self):
         items = [
-            Reasoning(item="Let me think..."),
+            Reasoning(item={"type": "text", "text": "Let me think..."}),
             ToolCall(id="tc_1", name="search", arguments='{"q": "test"}'),
             Response(item={"type": "text", "text": "Here's what I found."}),
         ]
@@ -107,13 +107,13 @@ class TestYLLMClient:
         # Use provider_cost path
         class FakeProviderWithCost(FakeProvider):
             async def stream(self, messages, *, model, tools=None, **kwargs):
-                store: dict = {}
+                store = Store()
 
                 async def _iter():
                     for item in self._items:
                         yield item
-                    store["usage"] = self._usage
-                    store["provider_cost"] = 0.005
+                    store.usage = self._usage
+                    store.provider_cost = 0.005
 
                 return _iter(), store
 
@@ -124,9 +124,9 @@ class TestYLLMClient:
         stream, store = await client.stream([user("Hi")])
         _ = [item async for item in stream]
 
-        assert store["cost"] is not None
-        assert store["cost"].total_cost == 0.005
-        assert store["cost"].source == "provider"
+        assert store.cost is not None
+        assert store.cost.total_cost == 0.005
+        assert store.cost.source == "provider"
 
     @pytest.mark.asyncio
     async def test_default_model_override(self):

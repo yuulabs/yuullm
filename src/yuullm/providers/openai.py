@@ -19,6 +19,7 @@ from ..types import (
     RawChunkHook,
     Reasoning,
     Response,
+    Store,
     StreamItem,
     StreamResult,
     Tick,
@@ -199,7 +200,7 @@ class OpenAIChatCompletionProvider:
         on_raw_chunk: RawChunkHook | None = None,
         **kwargs,
     ) -> StreamResult:
-        store: dict = {}
+        store = Store()
 
         api_messages = self._convert_messages(messages)
 
@@ -232,7 +233,7 @@ class OpenAIChatCompletionProvider:
         self,
         response,
         model: str,
-        store: dict,
+        store: Store,
         on_raw_chunk: RawChunkHook | None = None,
     ) -> AsyncIterator[StreamItem]:
         # Accumulate tool calls by index
@@ -248,7 +249,7 @@ class OpenAIChatCompletionProvider:
 
             # Usage comes in the final chunk (stream_options.include_usage)
             if chunk.usage is not None:
-                store["usage"] = Usage(
+                store.usage = Usage(
                     provider=self._provider_name,
                     model=chunk.model or model,
                     request_id=request_id,
@@ -260,7 +261,7 @@ class OpenAIChatCompletionProvider:
                 # Extract provider-reported cost (e.g. OpenRouter)
                 provider_cost = getattr(chunk.usage, "cost", None)
                 if provider_cost is not None:
-                    store["provider_cost"] = float(provider_cost)
+                    store.provider_cost = float(provider_cost)
 
             if not chunk.choices:
                 continue
@@ -283,7 +284,7 @@ class OpenAIChatCompletionProvider:
                     "reasoning"
                 )
             if reasoning_text:
-                yield Reasoning(item=reasoning_text)
+                yield Reasoning(item={"type": "text", "text": reasoning_text})
 
             # Regular content
             if delta.content:
@@ -322,13 +323,8 @@ class OpenAIChatCompletionProvider:
             )
 
         # Ensure usage is set even if the API didn't include it
-        store.setdefault(
-            "usage",
-            Usage(provider=self._provider_name, model=model, request_id=request_id),
-        )
-
-        # Extract provider cost if available (e.g. OpenRouter)
-        store.setdefault("provider_cost", None)
+        if store.usage is None:
+            store.usage = Usage(provider=self._provider_name, model=model, request_id=request_id)
 
     @staticmethod
     def _extract_cache_read(usage_obj) -> int:
