@@ -13,8 +13,8 @@ from typing import Any
 
 import openai
 
+from ..cache_config import CacheConfig
 from ..types import (
-    Item,
     Message,
     RawChunkHook,
     Reasoning,
@@ -45,6 +45,10 @@ class OpenAIChatCompletionProvider:
         Vendor / supplier identifier used in :class:`Usage` and pricing
         lookups.  Defaults to ``"openai"``; set to ``"deepseek"``,
         ``"openrouter"``, etc. when using a compatible endpoint.
+    cache_config : CacheConfig | None
+        When set on OpenAI direct, controls ``prompt_cache_retention``.
+        OpenAI uses automatic prompt caching -- no content annotation
+        needed.  Ignored for non-OpenAI vendors.
     """
 
     def __init__(
@@ -54,6 +58,7 @@ class OpenAIChatCompletionProvider:
         organization: str | None = None,
         *,
         provider_name: str = "openai",
+        cache_config: CacheConfig | None = None,
     ) -> None:
         self._client = openai.AsyncOpenAI(
             api_key=api_key,
@@ -61,6 +66,7 @@ class OpenAIChatCompletionProvider:
             organization=organization,
         )
         self._provider_name = provider_name
+        self._cache_config = cache_config
 
     @property
     def api_type(self) -> str:
@@ -78,49 +84,43 @@ class OpenAIChatCompletionProvider:
     def _convert_messages(messages: list[Message]) -> list[dict]:
         """Convert (role, items) tuples to OpenAI chat format.
 
-        Handles:
-        - ("system", ["text"]) -> {"role": "system", "content": "text"}
-        - ("user", ["text"]) -> {"role": "user", "content": "text"}
-        - ("user", ["text", {"type": "image_url", ...}]) -> multimodal content array
-        - ("assistant", ["text", {"type": "tool_call", ...}]) -> assistant with tool_calls
-        - ("tool", [{"type": "tool_result", ...}]) -> tool result messages
+        All items are dicts with a ``type`` key. Dispatch by type:
+        - text → simple content or multimodal content array
+        - tool_call → assistant tool_calls
+        - tool_result → tool result messages
+        - image_url, input_audio, file → multimodal content blocks
         """
         result: list[dict] = []
         for role, items in messages:
             if role == "system":
-                # System messages: concatenate text items
-                text = "".join(it for it in items if isinstance(it, str))
+                text = "".join(
+                    it["text"] for it in items if it.get("type") == "text"
+                )
                 result.append({"role": "system", "content": text})
 
             elif role == "user":
-                # If all items are plain strings, use simple content
-                if all(isinstance(it, str) for it in items):
+                # If all items are text, use simple string content
+                if all(it.get("type") == "text" for it in items):
                     result.append(
                         {
                             "role": "user",
                             "content": "".join(
-                                it for it in items if isinstance(it, str)
+                                it["text"] for it in items
                             ),
                         }
                     )
                 else:
-                    # Multimodal: build content array
-                    content: list[dict] = []
-                    for it in items:
-                        if isinstance(it, str):
-                            content.append({"type": "text", "text": it})
-                        else:
-                            content.append(it)
-                    result.append({"role": "user", "content": content})
+                    # Multimodal: pass content blocks as-is (already dict)
+                    result.append({"role": "user", "content": list(items)})
 
             elif role == "assistant":
                 entry: dict[str, Any] = {"role": "assistant"}
                 text_parts: list[str] = []
                 tool_calls: list[dict] = []
                 for it in items:
-                    if isinstance(it, str):
-                        text_parts.append(it)
-                    elif isinstance(it, dict) and it.get("type") == "tool_call":
+                    if it.get("type") == "text":
+                        text_parts.append(it["text"])
+                    elif it.get("type") == "tool_call":
                         tool_calls.append(
                             {
                                 "id": it["id"],
@@ -139,9 +139,8 @@ class OpenAIChatCompletionProvider:
 
             elif role == "tool":
                 for it in items:
-                    if isinstance(it, dict) and it.get("type") == "tool_result":
+                    if it.get("type") == "tool_result":
                         content = it.get("content", "")
-                        # OpenAI natively supports list content blocks in tool results
                         result.append(
                             {
                                 "role": "tool",
@@ -204,6 +203,16 @@ class OpenAIChatCompletionProvider:
         }
         if tools:
             create_kwargs["tools"] = self._convert_tools(tools)
+
+        # OpenAI automatic prompt caching: set retention policy
+        if (
+            self._cache_config is not None
+            and self._provider_name == "openai"
+            and "prompt_cache_retention" not in create_kwargs
+        ):
+            # If refresh_interval > 5 min, request 24h retention
+            if self._cache_config.refresh_interval > 300:
+                create_kwargs["prompt_cache_retention"] = "24h"
 
         response = await self._client.chat.completions.create(**create_kwargs)
 
@@ -269,7 +278,7 @@ class OpenAIChatCompletionProvider:
 
             # Regular content
             if delta.content:
-                yield Response(item=delta.content)
+                yield Response(item={"type": "text", "text": delta.content})
 
             # Tool calls (streamed incrementally)
             if delta.tool_calls:

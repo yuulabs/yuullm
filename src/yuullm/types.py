@@ -83,8 +83,9 @@ class FileItem(TypedDict):
 # The union of all structured content items.
 DictItem = ToolCallItem | ToolResultItem | TextItem | ImageItem | AudioItem | FileItem
 
-# A content item: plain text string or a typed structured dict.
-Item = str | DictItem
+# A content item is always a structured dict.
+# str was previously allowed but is now removed -- use TextItem instead.
+Item = DictItem
 
 
 # ---------------------------------------------------------------------------
@@ -150,12 +151,19 @@ History = list[Message]
 # ---------------------------------------------------------------------------
 
 
+def _to_item(it: str | DictItem) -> Item:
+    """Convert a str to TextItem; pass dicts through."""
+    if isinstance(it, str):
+        return {"type": "text", "text": it}
+    return it
+
+
 def system(content: str) -> Message:
     """Create a system message."""
-    return ("system", [content])
+    return ("system", [{"type": "text", "text": content}])
 
 
-def user(*items: Item) -> Message:
+def user(*items: str | DictItem) -> Message:
     """Create a user message with one or more content items.
 
     Examples::
@@ -163,10 +171,10 @@ def user(*items: Item) -> Message:
         user("Hello!")
         user("What is this?", ImageItem(type="image_url", image_url={"url": "..."}))
     """
-    return ("user", list(items))
+    return ("user", [_to_item(it) for it in items])
 
 
-def assistant(*items: Item) -> Message:
+def assistant(*items: str | DictItem) -> Message:
     """Create an assistant message.
 
     Examples::
@@ -179,7 +187,7 @@ def assistant(*items: Item) -> Message:
             arguments='{"q": "test"}',
         ))
     """
-    return ("assistant", list(items))
+    return ("assistant", [_to_item(it) for it in items])
 
 
 def tool(tool_call_id: str, content: str | list[dict]) -> Message:

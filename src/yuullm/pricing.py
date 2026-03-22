@@ -8,11 +8,26 @@ Priority (high → low):
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
 
 from .types import Cost, Usage
+
+# OpenRouter (and similar relays) may append suffixes to model names:
+#   "anthropic/claude-sonnet-4-20250514:beta"
+#   "anthropic/claude-sonnet-4-20250514:1234567890"   (unix timestamp)
+#   "anthropic/claude-sonnet-4-20250514:2024-11-20"   (date)
+# Strip everything from the first colon that is NOT part of the base
+# model id (dates like 20250514 are part of the name; suffixes after
+# a colon are not).
+_SUFFIX_RE = re.compile(r":[\w-]+$")
+
+
+def _strip_suffix(model: str) -> str:
+    """Remove OpenRouter-style colon suffixes (`:beta`, `:free`, timestamps)."""
+    return _SUFFIX_RE.sub("", model)
 
 
 class PriceCalculator:
@@ -52,6 +67,116 @@ class PriceCalculator:
     # Public API
     # ------------------------------------------------------------------
 
+    def get_base_prices(
+        self,
+        provider: str,
+        model: str,
+    ) -> dict[str, float] | None:
+        """Return raw per-million-token prices for *(provider, model)*.
+
+        Priority: YAML → genai-prices.  Returns ``None`` if no source
+        can determine prices.
+
+        Keys: ``input_mtok``, ``output_mtok``, ``cache_read_mtok``,
+        ``cache_write_mtok``.
+
+        For relay providers like OpenRouter, if ``model`` contains a
+        slash (e.g. ``"anthropic/claude-sonnet-4-20250514"``), the method
+        first tries the relay provider + full model id, then falls back
+        to parsing ``"vendor/model"`` and querying the upstream vendor
+        prices from genai-prices.
+        """
+        # Try YAML first (exact match, then suffix-stripped)
+        prices = self._yaml_prices.get((provider, model))
+        if prices is None:
+            prices = self._yaml_prices.get((provider, _strip_suffix(model)))
+        if prices is not None:
+            return dict(prices)
+
+        # genai-prices fallback
+        if self._enable_genai_prices:
+            prices = self._prices_from_genai(provider, model)
+            if prices is not None:
+                return prices
+
+        return None
+
+    def _prices_from_genai(
+        self, provider: str, model: str
+    ) -> dict[str, float] | None:
+        """Query genai-prices, with suffix stripping and relay fallback."""
+        try:
+            from genai_prices import Usage as GPUsage, calc_price
+        except ImportError:
+            return None
+
+        clean = _strip_suffix(model)
+
+        # Try direct lookup (with cleaned model name)
+        mp = self._try_genai_model_price(provider, clean)
+
+        # Relay fallback: "anthropic/claude-..." → ("anthropic", "claude-...")
+        if mp is None and "/" in clean:
+            upstream_provider, _, upstream_model = clean.partition("/")
+            mp = self._try_genai_model_price(upstream_provider, upstream_model)
+
+        if mp is None:
+            return None
+
+        return {
+            "input_mtok": float(getattr(mp, "input_mtok", 0) or 0),
+            "output_mtok": float(getattr(mp, "output_mtok", 0) or 0),
+            "cache_read_mtok": float(getattr(mp, "cache_read_mtok", 0) or 0),
+            "cache_write_mtok": float(getattr(mp, "cache_write_mtok", 0) or 0),
+        }
+
+    @staticmethod
+    def _try_genai_model_price(provider: str, model: str):
+        """Attempt a genai-prices lookup, return ModelPrice or None."""
+        try:
+            from genai_prices import Usage as GPUsage, calc_price
+
+            result = calc_price(
+                GPUsage(input_tokens=0, output_tokens=0),
+                model_ref=model,
+                provider_id=provider,
+            )
+            if result is not None and result.model_price is not None:
+                return result.model_price
+        except Exception:
+            pass
+        return None
+
+    def estimate(
+        self,
+        prices: dict[str, float],
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+    ) -> Cost:
+        """Pure arithmetic: prices * tokens.
+
+        *prices* is a dict with keys ``input_mtok``, ``output_mtok``,
+        ``cache_read_mtok``, ``cache_write_mtok``.  Providers pass in
+        overridden dicts (e.g. with different ``cache_write_mtok``) to
+        compare TTL options.
+        """
+        input_cost = input_tokens * prices.get("input_mtok", 0) / 1_000_000
+        output_cost = output_tokens * prices.get("output_mtok", 0) / 1_000_000
+        cache_read_cost = cache_read_tokens * prices.get("cache_read_mtok", 0) / 1_000_000
+        cache_write_cost = cache_write_tokens * prices.get("cache_write_mtok", 0) / 1_000_000
+        total = input_cost + output_cost + cache_read_cost + cache_write_cost
+        return Cost(
+            input_cost=input_cost,
+            output_cost=output_cost,
+            total_cost=total,
+            cache_read_cost=cache_read_cost,
+            cache_write_cost=cache_write_cost,
+            source="estimate",
+        )
+
     def calculate(
         self,
         usage: Usage,
@@ -89,6 +214,9 @@ class PriceCalculator:
 
     def _from_yaml(self, usage: Usage) -> Cost | None:
         prices = self._yaml_prices.get((usage.provider, usage.model))
+        # Fallback: try with suffix stripped
+        if prices is None:
+            prices = self._yaml_prices.get((usage.provider, _strip_suffix(usage.model)))
         if prices is None:
             return None
 
@@ -123,19 +251,23 @@ class PriceCalculator:
         except ImportError:
             return None
 
-        try:
-            price_data = calc_price(
-                GPUsage(
-                    input_tokens=usage.input_tokens,
-                    output_tokens=usage.output_tokens,
-                    cache_read_tokens=usage.cache_read_tokens,
-                    cache_write_tokens=usage.cache_write_tokens,
-                ),
-                model_ref=usage.model,
-                provider_id=usage.provider,
+        model = _strip_suffix(usage.model)
+        provider = usage.provider
+        gp_usage = GPUsage(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+        )
+
+        price_data = self._try_calc_price(calc_price, gp_usage, provider, model)
+
+        # Relay fallback: "anthropic/claude-..." → ("anthropic", "claude-...")
+        if price_data is None and "/" in model:
+            upstream_provider, _, upstream_model = model.partition("/")
+            price_data = self._try_calc_price(
+                calc_price, gp_usage, upstream_provider, upstream_model
             )
-        except Exception:
-            return None
 
         if price_data is None or price_data.total_price is None:
             return None
@@ -149,3 +281,11 @@ class PriceCalculator:
             total_cost=float(price_data.total_price),
             source="genai-prices",
         )
+
+    @staticmethod
+    def _try_calc_price(calc_price, gp_usage, provider: str, model: str):
+        """Attempt calc_price, return result or None."""
+        try:
+            return calc_price(gp_usage, model_ref=model, provider_id=provider)
+        except Exception:
+            return None

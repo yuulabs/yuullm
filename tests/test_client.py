@@ -64,7 +64,7 @@ class FakeProvider:
 class TestYLLMClient:
     @pytest.mark.asyncio
     async def test_stream_basic(self):
-        items = [Response(item="Hello"), Response(item=" world")]
+        items = [Response(item={"type": "text", "text": "Hello"}), Response(item={"type": "text", "text": " world"})]
         usage = Usage(
             provider="fake", model="test-model", input_tokens=10, output_tokens=5
         )
@@ -75,8 +75,8 @@ class TestYLLMClient:
         collected = [item async for item in stream]
 
         assert len(collected) == 2
-        assert collected[0] == Response(item="Hello")
-        assert collected[1] == Response(item=" world")
+        assert collected[0] == Response(item={"type": "text", "text": "Hello"})
+        assert collected[1] == Response(item={"type": "text", "text": " world"})
         assert store["usage"] == usage
         assert store["cost"] is None  # no price calculator
 
@@ -85,7 +85,7 @@ class TestYLLMClient:
         items = [
             Reasoning(item="Let me think..."),
             ToolCall(id="tc_1", name="search", arguments='{"q": "test"}'),
-            Response(item="Here's what I found."),
+            Response(item={"type": "text", "text": "Here's what I found."}),
         ]
         usage = Usage(provider="fake", model="m", input_tokens=20, output_tokens=15)
         provider = FakeProvider(items, usage)
@@ -100,7 +100,7 @@ class TestYLLMClient:
 
     @pytest.mark.asyncio
     async def test_stream_with_price_calculator(self):
-        items = [Response(item="ok")]
+        items = [Response(item={"type": "text", "text": "ok"})]
         usage = Usage(provider="fake", model="m", input_tokens=100, output_tokens=50)
         provider = FakeProvider(items, usage)
 
@@ -131,7 +131,7 @@ class TestYLLMClient:
     @pytest.mark.asyncio
     async def test_default_model_override(self):
         """model kwarg should override default_model."""
-        items = [Response(item="ok")]
+        items = [Response(item={"type": "text", "text": "ok"})]
         usage = Usage(
             provider="fake", model="override-model", input_tokens=1, output_tokens=1
         )
@@ -271,8 +271,8 @@ class TestOpenAIMessageConversion:
 class TestAnthropicMessageConversion:
     def test_system_extraction(self):
         msgs = [system("Be helpful"), user("Hi")]
-        system_text, rest = AnthropicMessagesProvider._extract_system(msgs)
-        assert system_text == "Be helpful"
+        system_blocks, rest = AnthropicMessagesProvider._extract_system(msgs)
+        assert system_blocks == [{"type": "text", "text": "Be helpful"}]
         assert len(rest) == 1
         assert rest[0][0] == "user"
 

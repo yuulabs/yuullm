@@ -12,6 +12,7 @@ Public API re-exports for convenient access::
     stream, store = await client.stream(messages)
 """
 
+from .cache_config import CacheConfig, ConstantRate, TrafficEstimator
 from .client import YLLMClient
 from .pricing import PriceCalculator
 from .provider import Provider
@@ -55,6 +56,10 @@ __all__ = [
     "Provider",
     # Pricing
     "PriceCalculator",
+    # Cache config
+    "CacheConfig",
+    "ConstantRate",
+    "TrafficEstimator",
     # Stream items
     "Reasoning",
     "ToolCall",

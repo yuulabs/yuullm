@@ -5,14 +5,17 @@ This provider uses the Anthropic ``/v1/messages`` endpoint with streaming.
 
 from __future__ import annotations
 
+import copy
 import json
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
 import anthropic
 
+from ..cache_config import CacheConfig
+from ..pricing import PriceCalculator
 from ..types import (
-    Item,
     Message,
     RawChunkHook,
     Reasoning,
@@ -37,7 +40,14 @@ class AnthropicMessagesProvider:
     provider_name : str
         Vendor / supplier identifier used in :class:`Usage` and pricing
         lookups.  Defaults to ``"anthropic"``.
+    cache_config : CacheConfig | None
+        When set, enables automatic cache breakpoint injection.
+    price_calculator : PriceCalculator | None
+        Used to decide optimal TTL tier via cost estimation.
     """
+
+    # Anthropic cache-write cost multipliers relative to input_mtok
+    _WRITE_MUL: dict[int, float] = {300: 1.25, 3600: 2.0}
 
     def __init__(
         self,
@@ -45,6 +55,8 @@ class AnthropicMessagesProvider:
         base_url: str | None = None,
         *,
         provider_name: str = "anthropic",
+        cache_config: CacheConfig | None = None,
+        price_calculator: PriceCalculator | None = None,
     ) -> None:
         kwargs: dict = {}
         if api_key is not None:
@@ -53,6 +65,8 @@ class AnthropicMessagesProvider:
             kwargs["base_url"] = base_url
         self._client = anthropic.AsyncAnthropic(**kwargs)
         self._provider_name = provider_name
+        self._cache_config = cache_config
+        self._price_calc = price_calculator
 
     @property
     def api_type(self) -> str:
@@ -68,56 +82,47 @@ class AnthropicMessagesProvider:
 
     @staticmethod
     def _extract_system(messages: list[Message]) -> tuple[str | None, list[Message]]:
-        """Separate system messages (Anthropic uses a top-level param)."""
-        system_text: str | None = None
+        """Separate system messages (Anthropic uses a top-level param).
+
+        Returns the system content as a list of content blocks (for
+        cache_control support) or a plain string, plus the remaining
+        messages.
+        """
+        system_blocks: list[dict] | None = None
         rest: list[Message] = []
         for role, items in messages:
             if role == "system":
-                # Concatenate text items from system messages
-                text = "".join(it for it in items if isinstance(it, str))
-                system_text = text
+                system_blocks = list(items)
             else:
                 rest.append((role, items))
-        return system_text, rest
+        return system_blocks, rest
 
     @staticmethod
     def _convert_messages(messages: list[Message]) -> list[dict]:
         """Convert (role, items) tuples to Anthropic messages format.
 
-        Handles:
-        - ("user", ["text"]) -> {"role": "user", "content": "text"}
-        - ("user", ["text", {"type": "image", ...}]) -> multimodal content blocks
-        - ("assistant", ["text", {"type": "tool_call", ...}]) -> content blocks
-        - ("tool", [{"type": "tool_result", ...}]) -> tool_result content blocks
+        All items are dicts with a ``type`` key. Dispatch by type.
         """
         result: list[dict] = []
         for role, items in messages:
             if role == "user":
-                # If all items are plain strings, use simple content
-                if all(isinstance(it, str) for it in items):
+                # If all items are text-only, use simple string content
+                if all(it.get("type") == "text" for it in items):
                     result.append(
                         {
                             "role": "user",
-                            "content": "".join(
-                                it for it in items if isinstance(it, str)
-                            ),
+                            "content": "".join(it["text"] for it in items),
                         }
                     )
                 else:
-                    content: list[dict] = []
-                    for it in items:
-                        if isinstance(it, str):
-                            content.append({"type": "text", "text": it})
-                        else:
-                            content.append(it)
-                    result.append({"role": "user", "content": content})
+                    result.append({"role": "user", "content": list(items)})
 
             elif role == "assistant":
                 content_blocks: list[dict] = []
                 for it in items:
-                    if isinstance(it, str):
-                        content_blocks.append({"type": "text", "text": it})
-                    elif isinstance(it, dict) and it.get("type") == "tool_call":
+                    if it.get("type") == "text":
+                        content_blocks.append(it)
+                    elif it.get("type") == "tool_call":
                         args = it.get("arguments", "{}")
                         content_blocks.append(
                             {
@@ -132,13 +137,11 @@ class AnthropicMessagesProvider:
                 result.append({"role": "assistant", "content": content_blocks})
 
             elif role == "tool":
-                # Anthropic expects tool results as user messages with tool_result blocks
                 tool_results: list[dict] = []
                 for it in items:
-                    if isinstance(it, dict) and it.get("type") == "tool_result":
+                    if it.get("type") == "tool_result":
                         raw_content = it.get("content", "")
                         if isinstance(raw_content, list):
-                            # Convert OpenAI-style content blocks to Anthropic format
                             anthropic_blocks: list[dict] = []
                             for block in raw_content:
                                 if block.get("type") == "text":
@@ -146,7 +149,6 @@ class AnthropicMessagesProvider:
                                 elif block.get("type") == "image_url":
                                     url = block.get("image_url", {}).get("url", "")
                                     if url.startswith("data:"):
-                                        # data:image/png;base64,... → Anthropic base64 source
                                         header, _, b64 = url.partition(",")
                                         media_type = header.split(":")[1].split(";")[0]
                                         anthropic_blocks.append({
@@ -222,7 +224,12 @@ class AnthropicMessagesProvider:
     ) -> StreamResult:
         store: dict = {}
 
-        system_text, rest = self._extract_system(messages)
+        # Inject cache breakpoints if cache_config is set
+        if self._cache_config is not None:
+            messages = self._inject_cache(messages, model, tools)
+            tools = self._inject_cache_tools(tools, model)
+
+        system_blocks, rest = self._extract_system(messages)
         api_messages = self._convert_messages(rest)
 
         create_kwargs: dict = {
@@ -231,13 +238,121 @@ class AnthropicMessagesProvider:
             "max_tokens": kwargs.pop("max_tokens", 8192),
             **kwargs,
         }
-        if system_text is not None:
-            create_kwargs["system"] = system_text
+        if system_blocks is not None:
+            create_kwargs["system"] = system_blocks
         if tools:
             create_kwargs["tools"] = self._convert_tools(tools)
 
         iterator = self._iterate(create_kwargs, model, store, on_raw_chunk)
         return iterator, store
+
+    # ------------------------------------------------------------------
+    # Cache injection (direct Anthropic)
+    # ------------------------------------------------------------------
+
+    def _pick_ttl(self, model: str, messages: list[Message], tools: list[dict] | None) -> int:
+        """Choose TTL tier by cost estimation. Fallback: 300s."""
+        if self._price_calc is None or self._cache_config is None:
+            return 300
+
+        base = self._price_calc.get_base_prices(self._provider_name, model)
+        if base is None:
+            return 300
+
+        input_price = base.get("input_mtok", 0)
+        if input_price <= 0:
+            return 300
+
+        n = self._estimate_prefix_tokens(messages, tools)
+        if n <= 0:
+            return 300
+
+        now = time.monotonic()
+        best_ttl, best_cost = 300, float("inf")
+
+        for ttl, mul in self._WRITE_MUL.items():
+            reads = self._cache_config.traffic.expected_requests(now, ttl)
+            cost = self._price_calc.estimate(
+                {**base, "cache_write_mtok": input_price * mul},
+                cache_write_tokens=n,
+                cache_read_tokens=int(n * reads),
+            )
+            if cost.total_cost < best_cost:
+                best_ttl, best_cost = ttl, cost.total_cost
+
+        return best_ttl
+
+    @staticmethod
+    def _make_cache_control(ttl: int) -> dict:
+        if ttl <= 300:
+            return {"type": "ephemeral"}
+        return {"type": "ephemeral", "ttl": ttl}
+
+    def _inject_cache(
+        self, messages: list[Message], model: str, tools: list[dict] | None
+    ) -> list[Message]:
+        """Add cache_control breakpoints to system last block and prefix boundary."""
+        ttl = self._pick_ttl(model, messages, tools)
+        cc = self._make_cache_control(ttl)
+
+        result: list[Message] = []
+        breakpoints = 0
+
+        for role, items in messages:
+            if role == "system" and items and breakpoints < 4:
+                items = [copy.copy(it) for it in items]
+                items[-1] = {**items[-1], "cache_control": cc}
+                breakpoints += 1
+                result.append((role, items))
+            else:
+                result.append((role, items))
+
+        # Mark prefix boundary (last message before the final user turn)
+        if breakpoints < 4 and len(result) >= 2:
+            for i in range(len(result) - 2, -1, -1):
+                r, its = result[i]
+                if r == "system":
+                    continue
+                if its:
+                    its = list(its)
+                    its[-1] = {**its[-1], "cache_control": cc}
+                    result[i] = (r, its)
+                    break
+
+        return result
+
+    def _inject_cache_tools(
+        self, tools: list[dict] | None, model: str
+    ) -> list[dict] | None:
+        """Mark last tool with cache_control."""
+        if not tools:
+            return tools
+        ttl = self._pick_ttl(model, [], tools)
+        cc = self._make_cache_control(ttl)
+        tools = list(tools)
+        tools[-1] = {**tools[-1], "cache_control": cc}
+        return tools
+
+    @staticmethod
+    def _estimate_prefix_tokens(
+        messages: list[Message], tools: list[dict] | None
+    ) -> int:
+        """Rough token estimate: 4 chars ≈ 1 token."""
+        char_count = 0
+        for i, (role, items) in enumerate(messages):
+            if role == "system":
+                for it in items:
+                    char_count += len(it.get("text", ""))
+            elif i < len(messages) - 1:
+                for it in items:
+                    if it.get("type") == "text":
+                        char_count += len(it.get("text", ""))
+                    else:
+                        char_count += 100
+        if tools:
+            import json as _json
+            char_count += len(_json.dumps(tools))
+        return char_count // 4
 
     async def _iterate(
         self,
@@ -277,7 +392,7 @@ class AnthropicMessagesProvider:
                             case "thinking_delta":
                                 yield Reasoning(item=delta.thinking)
                             case "text_delta":
-                                yield Response(item=delta.text)
+                                yield Response(item={"type": "text", "text": delta.text})
                             case "input_json_delta":
                                 if current_block_index in tool_calls_acc:
                                     tool_calls_acc[current_block_index][

@@ -28,8 +28,8 @@ class TestStreamItems:
         assert r.item == "thinking..."
 
     def test_response(self):
-        r = Response(item="hello")
-        assert r.item == "hello"
+        r = Response(item={"type": "text", "text": "hello"})
+        assert r.item == {"type": "text", "text": "hello"}
 
     def test_tool_call(self):
         tc = ToolCall(id="tc_1", name="search", arguments='{"q": "test"}')
@@ -49,13 +49,13 @@ class TestStreamItems:
 class TestMessages:
     def test_system_message(self):
         m = system("You are helpful.")
-        assert m == ("system", ["You are helpful."])
+        assert m == ("system", [{"type": "text", "text": "You are helpful."}])
         assert m[0] == "system"
-        assert m[1] == ["You are helpful."]
+        assert m[1][0]["text"] == "You are helpful."
 
     def test_user_message(self):
         m = user("Hi")
-        assert m == ("user", ["Hi"])
+        assert m == ("user", [{"type": "text", "text": "Hi"}])
         assert m[0] == "user"
 
     def test_user_multimodal(self):
@@ -66,12 +66,12 @@ class TestMessages:
         m = user("What is this?", img)
         assert m[0] == "user"
         assert len(m[1]) == 2
-        assert m[1][0] == "What is this?"
+        assert m[1][0] == {"type": "text", "text": "What is this?"}
         assert m[1][1]["type"] == "image_url"
 
     def test_assistant_message_text(self):
         m = assistant("Hello!")
-        assert m == ("assistant", ["Hello!"])
+        assert m == ("assistant", [{"type": "text", "text": "Hello!"}])
 
     def test_assistant_message_with_tool_calls(self):
         tc: ToolCallItem = {
@@ -83,6 +83,7 @@ class TestMessages:
         m = assistant("thinking...", tc)
         assert m[0] == "assistant"
         assert len(m[1]) == 2
+        assert m[1][0] == {"type": "text", "text": "thinking..."}
         assert m[1][1]["type"] == "tool_call"
 
     def test_tool_result_message(self):

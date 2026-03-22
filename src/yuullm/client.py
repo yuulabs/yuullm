@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
+from .cache_config import CacheConfig
 from .pricing import PriceCalculator
 from .provider import Provider
 from .types import (
@@ -27,6 +28,17 @@ class YLLMClient:
 
     Tools are passed as ``list[dict]`` -- raw json_schema dicts from
     yuutools (or any other source).  No ToolSpec class needed.
+
+    Parameters
+    ----------
+    auto_prompt_caching : bool
+        When ``True`` (default), the provider receives *cache_config*
+        and *price_calculator* so it can automatically inject
+        vendor-specific cache markers.  Set to ``False`` to disable.
+    cache_config : CacheConfig | None
+        Business-level caching intent passed to the provider.
+        Defaults to ``CacheConfig()`` when *auto_prompt_caching* is
+        ``True`` and no explicit config is given.
     """
 
     def __init__(
@@ -35,11 +47,20 @@ class YLLMClient:
         default_model: str,
         tools: list[dict[str, Any]] | None = None,
         price_calculator: PriceCalculator | None = None,
+        *,
+        auto_prompt_caching: bool = True,
+        cache_config: CacheConfig | None = None,
     ) -> None:
-        self.provider = provider
         self.default_model = default_model
         self.tools = tools
         self.price_calculator = price_calculator
+
+        # Wire up cache_config into the provider if it supports it
+        if auto_prompt_caching:
+            effective_config = cache_config or CacheConfig()
+            _inject_cache_config(provider, effective_config, price_calculator)
+
+        self.provider = provider
 
     async def stream(
         self,
@@ -91,3 +112,20 @@ class YLLMClient:
             store["cost"] = cost
         else:
             store.setdefault("cost", None)
+
+
+def _inject_cache_config(
+    provider: Provider,
+    config: CacheConfig,
+    price_calc: PriceCalculator | None,
+) -> None:
+    """Set cache_config / price_calculator on providers that support them.
+
+    This is a duck-typing approach: if the provider has the attribute,
+    set it.  No-op for providers that don't (e.g. DeepSeek via
+    OpenAIChatCompletionProvider with provider_name="deepseek").
+    """
+    if hasattr(provider, "_cache_config") and provider._cache_config is None:
+        provider._cache_config = config
+    if hasattr(provider, "_price_calc") and provider._price_calc is None and price_calc is not None:
+        provider._price_calc = price_calc
