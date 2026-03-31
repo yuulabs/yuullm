@@ -52,6 +52,9 @@ class OpenAIChatCompletionProvider:
         When set on OpenAI direct, controls ``prompt_cache_retention``.
         OpenAI uses automatic prompt caching -- no content annotation
         needed.  Ignored for non-OpenAI vendors.
+    default_headers : dict[str, str] | None
+        Additional headers to send with every request. Useful for
+        application identification (e.g., ``{"User-Agent": "my-app/1.0"}``).
     """
 
     def __init__(
@@ -62,11 +65,13 @@ class OpenAIChatCompletionProvider:
         *,
         provider_name: str = "openai",
         cache_config: CacheConfig | None = None,
+        default_headers: dict[str, str] | None = None,
     ) -> None:
         self._client = openai.AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
             organization=organization,
+            default_headers=default_headers,
         )
         self._provider_name = provider_name
         self._cache_config = cache_config

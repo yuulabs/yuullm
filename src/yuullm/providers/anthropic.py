@@ -50,6 +50,9 @@ class AnthropicMessagesProvider:
         When set, enables automatic cache breakpoint injection.
     price_calculator : PriceCalculator | None
         Used to decide optimal TTL tier via cost estimation.
+    default_headers : dict[str, str] | None
+        Additional headers to send with every request. Useful for
+        application identification (e.g., ``{"User-Agent": "my-app/1.0"}``).
     """
 
     # Anthropic cache-write cost multipliers relative to input_mtok
@@ -63,12 +66,15 @@ class AnthropicMessagesProvider:
         provider_name: str = "anthropic",
         cache_config: CacheConfig | None = None,
         price_calculator: PriceCalculator | None = None,
+        default_headers: dict[str, str] | None = None,
     ) -> None:
         kwargs: dict = {}
         if api_key is not None:
             kwargs["api_key"] = api_key
         if base_url is not None:
             kwargs["base_url"] = base_url
+        if default_headers is not None:
+            kwargs["default_headers"] = default_headers
         self._client = anthropic.AsyncAnthropic(**kwargs)
         self._provider_name = provider_name
         self._cache_config = cache_config

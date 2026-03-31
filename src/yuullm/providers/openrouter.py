@@ -42,6 +42,9 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
         Business-level caching intent.  ``None`` disables caching.
     price_calculator : PriceCalculator | None
         Used to decide optimal TTL tier via cost estimation.
+    default_headers : dict[str, str] | None
+        Additional headers to send with every request. Useful for
+        application identification (e.g., ``{"User-Agent": "my-app/1.0"}``).
     """
 
     def __init__(
@@ -50,11 +53,13 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
         *,
         cache_config: CacheConfig | None = None,
         price_calculator: PriceCalculator | None = None,
+        default_headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(
             api_key=api_key,
             base_url="https://openrouter.ai/api/v1",
             provider_name="openrouter",
+            default_headers=default_headers,
         )
         self._cache_config = cache_config
         self._price_calc = price_calculator
