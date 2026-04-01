@@ -26,6 +26,7 @@ from .types import (
     ImageItem,
     Item,
     Message,
+    ProviderModel,
     RawChunkHook,
     Reasoning,
     Response,
@@ -82,6 +83,7 @@ __all__ = [
     # Message types & helpers
     "Message",
     "History",
+    "ProviderModel",
     "system",
     "user",
     "assistant",

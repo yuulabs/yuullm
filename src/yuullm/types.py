@@ -38,6 +38,7 @@ class ToolCallItem(_CacheAnnotated):
     name: str
     arguments: str  # raw JSON string
 
+
 class TextItem(_CacheAnnotated):
     """A text content block."""
 
@@ -152,6 +153,15 @@ class Tick(msgspec.Struct, frozen=True):
 
 
 StreamItem = Reasoning | ToolCall | Response | Tick
+
+
+class ProviderModel(msgspec.Struct, frozen=True):
+    """A model surfaced by a provider's model-list API."""
+
+    id: str
+    display_name: str | None = None
+    supports_vision: bool | None = None
+
 
 Role = Literal["system", "user", "assistant", "tool"]
 SystemMessage = tuple[Literal["system"], list[TextItem]]
@@ -281,11 +291,15 @@ def is_file_item(item: DictItem) -> TypeGuard[FileItem]:
 
 
 @overload
-def with_cache_control(item: ToolCallItem, cache_control: CacheControl) -> ToolCallItem: ...
+def with_cache_control(
+    item: ToolCallItem, cache_control: CacheControl
+) -> ToolCallItem: ...
 
 
 @overload
-def with_cache_control(item: ToolResultItem, cache_control: CacheControl) -> ToolResultItem: ...
+def with_cache_control(
+    item: ToolResultItem, cache_control: CacheControl
+) -> ToolResultItem: ...
 
 
 @overload
@@ -466,12 +480,14 @@ class Cost(msgspec.Struct, frozen=True):
 # Type alias for the stream return
 # ---------------------------------------------------------------------------
 
+
 class Store(msgspec.Struct):
     """Mutable metadata populated after the stream is exhausted."""
 
     usage: Usage | None = None
     cost: Cost | None = None
     provider_cost: float | None = None
+
 
 StreamResult = tuple[AsyncIterator[StreamItem], Store]
 """Return type of ``Provider.stream()`` and ``YLLMClient.stream()``."""
@@ -493,9 +509,7 @@ without abandoning yuullm's streaming abstraction.
 """
 
 
-def on_tool_call_name(
-    name: str, callback: Callable[[int], None]
-) -> RawChunkHook:
+def on_tool_call_name(name: str, callback: Callable[[int], None]) -> RawChunkHook:
     """Helper hook: fires *callback(index)* when a tool call's name matches.
 
     Works with both OpenAI and Anthropic raw chunks.  The callback is

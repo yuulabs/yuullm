@@ -30,6 +30,23 @@ def _strip_suffix(model: str) -> str:
     return _SUFFIX_RE.sub("", model)
 
 
+def _coerce_price_value(value) -> float:
+    """Normalize genai-prices price values to a scalar per-million-token price.
+
+    Recent genai-prices versions may return ``TieredPrices`` instead of a raw
+    Decimal/float for some aliases like ``claude-sonnet-4.6``. For base price
+    lookups used by cache TTL estimation, we only need the baseline tier.
+    """
+    if value is None:
+        return 0.0
+
+    base = getattr(value, "base", None)
+    if base is not None:
+        value = base
+
+    return float(value or 0)
+
+
 class PriceCalculator:
     """Calculates :class:`Cost` from :class:`Usage` using a three-level
     price source hierarchy."""
@@ -124,10 +141,10 @@ class PriceCalculator:
             return None
 
         return {
-            "input_mtok": float(getattr(mp, "input_mtok", 0) or 0),
-            "output_mtok": float(getattr(mp, "output_mtok", 0) or 0),
-            "cache_read_mtok": float(getattr(mp, "cache_read_mtok", 0) or 0),
-            "cache_write_mtok": float(getattr(mp, "cache_write_mtok", 0) or 0),
+            "input_mtok": _coerce_price_value(getattr(mp, "input_mtok", 0)),
+            "output_mtok": _coerce_price_value(getattr(mp, "output_mtok", 0)),
+            "cache_read_mtok": _coerce_price_value(getattr(mp, "cache_read_mtok", 0)),
+            "cache_write_mtok": _coerce_price_value(getattr(mp, "cache_write_mtok", 0)),
         }
 
     @staticmethod

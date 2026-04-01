@@ -11,6 +11,7 @@ from .provider import Provider
 from .types import (
     Cost,
     Message,
+    ProviderModel,
     RawChunkHook,
     Store,
     StreamItem,
@@ -93,6 +94,10 @@ class YLLMClient:
 
         wrapped = self._wrap_iterator(iterator, store)
         return wrapped, store
+
+    async def list_models(self) -> list[ProviderModel]:
+        """Return the provider's currently available models."""
+        return await self.provider.list_models()
 
     async def _wrap_iterator(
         self,

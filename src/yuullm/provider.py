@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from .types import Message, RawChunkHook, StreamResult
+from .types import Message, ProviderModel, RawChunkHook, StreamResult
 
 
 class Provider(Protocol):
@@ -40,6 +40,10 @@ class Provider(Protocol):
     @property
     def provider(self) -> str:
         """Vendor / supplier name (e.g. ``"openai"``, ``"deepseek"``)."""
+        ...
+
+    async def list_models(self) -> list[ProviderModel]:
+        """Return the provider's currently available models."""
         ...
 
     async def stream(

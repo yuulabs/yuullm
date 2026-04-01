@@ -7,7 +7,6 @@ Together, Groq, etc.).
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
@@ -16,6 +15,7 @@ import openai
 from ..cache_config import CacheConfig
 from ..types import (
     Message,
+    ProviderModel,
     RawChunkHook,
     Reasoning,
     Response,
@@ -92,6 +92,20 @@ class OpenAIChatCompletionProvider:
     @property
     def provider(self) -> str:
         return self._provider_name
+
+    async def list_models(self) -> list[ProviderModel]:
+        """Return model IDs exposed by the provider's `/models` endpoint."""
+        models: list[ProviderModel] = []
+        seen: set[str] = set()
+        async for item in self._client.models.list():
+            if isinstance(item, dict):
+                model_id = str(item.get("id", "") or "").strip()
+            else:
+                model_id = str(getattr(item, "id", "") or "").strip()
+            if model_id and model_id not in seen:
+                seen.add(model_id)
+                models.append(ProviderModel(id=model_id))
+        return models
 
     # ------------------------------------------------------------------
     # Message conversion: (role, items) tuples -> OpenAI API format
@@ -339,7 +353,9 @@ class OpenAIChatCompletionProvider:
 
         # Ensure usage is set even if the API didn't include it
         if store.usage is None:
-            store.usage = Usage(provider=self._provider_name, model=model, request_id=request_id)
+            store.usage = Usage(
+                provider=self._provider_name, model=model, request_id=request_id
+            )
 
     @staticmethod
     def _extract_cache_read(usage_obj) -> int:

@@ -196,6 +196,23 @@ class TestGetBasePrices:
         assert prices is not None
         assert prices["input_mtok"] > 0
 
+    def test_tiered_genai_prices_use_base_tier(self):
+        """TieredPrices from genai-prices should be normalized to scalar base prices."""
+        calc = PriceCalculator(enable_genai_prices=True)
+        prices = calc.get_base_prices("anthropic", "claude-sonnet-4.6")
+        assert prices is not None
+        assert prices["input_mtok"] == 3.0
+        assert prices["output_mtok"] == 15.0
+        assert prices["cache_read_mtok"] == 0.3
+        assert prices["cache_write_mtok"] == 3.75
+
+    def test_tiered_relay_prices_use_base_tier(self):
+        """Relay fallback should also normalize TieredPrices for provider aliases."""
+        calc = PriceCalculator(enable_genai_prices=True)
+        prices = calc.get_base_prices("openrouter", "anthropic/claude-sonnet-4.6")
+        assert prices is not None
+        assert prices["input_mtok"] == 3.0
+
 
 class TestEstimate:
     def test_basic(self):

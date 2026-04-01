@@ -17,6 +17,7 @@ from ..pricing import PriceCalculator
 from ..types import (
     CacheControl,
     Message,
+    ProviderModel,
     RawChunkHook,
     Reasoning,
     Response,
@@ -98,6 +99,24 @@ class AnthropicMessagesProvider:
     @property
     def provider(self) -> str:
         return self._provider_name
+
+    async def list_models(self) -> list[ProviderModel]:
+        """Return model IDs exposed by Anthropic's models API."""
+        models: list[ProviderModel] = []
+        seen: set[str] = set()
+        async for item in self._client.models.list(limit=1000):
+            if isinstance(item, dict):
+                model_id = str(item.get("id", "") or "").strip()
+                display_name = str(item.get("display_name", "") or "").strip() or None
+            else:
+                model_id = str(getattr(item, "id", "") or "").strip()
+                display_name = (
+                    str(getattr(item, "display_name", "") or "").strip() or None
+                )
+            if model_id and model_id not in seen:
+                seen.add(model_id)
+                models.append(ProviderModel(id=model_id, display_name=display_name))
+        return models
 
     # ------------------------------------------------------------------
     # Message conversion: (role, items) tuples -> Anthropic API format
@@ -389,6 +408,7 @@ class AnthropicMessagesProvider:
                         char_count += 100
         if tools:
             import json as _json
+
             char_count += len(_json.dumps(tools))
         return char_count // 4
 
@@ -443,11 +463,12 @@ class AnthropicMessagesProvider:
                             yield Response(item={"type": "text", "text": text})
                     elif delta_type == "input_json_delta":
                         partial_json = getattr(delta, "partial_json", None)
-                        if (
-                            current_block_index in tool_calls_acc
-                            and isinstance(partial_json, str)
+                        if current_block_index in tool_calls_acc and isinstance(
+                            partial_json, str
                         ):
-                            tool_calls_acc[current_block_index]["arguments"] += partial_json
+                            tool_calls_acc[current_block_index]["arguments"] += (
+                                partial_json
+                            )
                         if on_raw_chunk is not None:
                             yield Tick()
                 elif event_type == "content_block_stop":

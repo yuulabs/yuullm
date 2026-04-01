@@ -1,14 +1,13 @@
 """Tests for yuullm.client and provider message conversion."""
 
-import asyncio
 from collections.abc import AsyncIterator
 
 import pytest
 
 from yuullm import (
-    Cost,
     ImageItem,
     PriceCalculator,
+    ProviderModel,
     Reasoning,
     Response,
     Store,
@@ -16,10 +15,10 @@ from yuullm import (
     ToolCallItem,
     Usage,
     YLLMClient,
-    system,
-    user,
     assistant,
+    system,
     tool,
+    user,
 )
 from yuullm.providers.openai import OpenAIChatCompletionProvider
 from yuullm.providers.anthropic import AnthropicMessagesProvider
@@ -33,8 +32,14 @@ from yuullm.providers.anthropic import AnthropicMessagesProvider
 class FakeProvider:
     """A provider that yields pre-configured items."""
 
-    def __init__(self, items: list, usage: Usage) -> None:
+    def __init__(
+        self,
+        items: list,
+        usage: Usage,
+        models: list[ProviderModel] | None = None,
+    ) -> None:
         self._items = items
+        self._models = models or [ProviderModel(id=usage.model)]
         self._usage = usage
 
     @property
@@ -44,6 +49,9 @@ class FakeProvider:
     @property
     def provider(self) -> str:
         return "fake"
+
+    async def list_models(self) -> list[ProviderModel]:
+        return list(self._models)
 
     async def stream(self, messages, *, model, tools=None, **kwargs):
         store = Store()
@@ -63,8 +71,31 @@ class FakeProvider:
 
 class TestYLLMClient:
     @pytest.mark.asyncio
+    async def test_list_models_delegates_to_provider(self):
+        usage = Usage(provider="fake", model="test-model")
+        provider = FakeProvider(
+            [],
+            usage,
+            models=[
+                ProviderModel(id="test-model"),
+                ProviderModel(id="test-model-v2"),
+            ],
+        )
+        client = YLLMClient(provider=provider, default_model="test-model")
+
+        models = await client.list_models()
+
+        assert models == [
+            ProviderModel(id="test-model"),
+            ProviderModel(id="test-model-v2"),
+        ]
+
+    @pytest.mark.asyncio
     async def test_stream_basic(self):
-        items = [Response(item={"type": "text", "text": "Hello"}), Response(item={"type": "text", "text": " world"})]
+        items = [
+            Response(item={"type": "text", "text": "Hello"}),
+            Response(item={"type": "text", "text": " world"}),
+        ]
         usage = Usage(
             provider="fake", model="test-model", input_tokens=10, output_tokens=5
         )
@@ -181,6 +212,70 @@ class TestProviderProtocol:
         p = AnthropicMessagesProvider(api_key="fake")
         assert p.api_type == "anthropic-messages"
         assert p.provider == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_openai_provider_list_models(self):
+        class _Model:
+            def __init__(self, model_id: str) -> None:
+                self.id = model_id
+
+        class _AsyncItems:
+            def __init__(self, items: list[object]) -> None:
+                self._items = items
+
+            def __aiter__(self):
+                async def _iter():
+                    for item in self._items:
+                        yield item
+
+                return _iter()
+
+        p = OpenAIChatCompletionProvider(api_key="fake")
+        p._client.models.list = lambda: _AsyncItems(
+            [_Model("gpt-4.1"), _Model("gpt-4o")]
+        )
+
+        assert await p.list_models() == [
+            ProviderModel(id="gpt-4.1"),
+            ProviderModel(id="gpt-4o"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_anthropic_provider_list_models(self):
+        class _Model:
+            def __init__(self, model_id: str, display_name: str) -> None:
+                self.id = model_id
+                self.display_name = display_name
+
+        class _AsyncItems:
+            def __init__(self, items: list[object]) -> None:
+                self._items = items
+
+            def __aiter__(self):
+                async def _iter():
+                    for item in self._items:
+                        yield item
+
+                return _iter()
+
+        p = AnthropicMessagesProvider(api_key="fake")
+        p._client.models.list = lambda **kwargs: _AsyncItems(
+            [
+                _Model("claude-3-7-sonnet", "Claude 3.7 Sonnet"),
+                _Model("claude-sonnet-4-0", "Claude Sonnet 4"),
+            ]
+        )
+
+        assert await p.list_models() == [
+            ProviderModel(
+                id="claude-3-7-sonnet",
+                display_name="Claude 3.7 Sonnet",
+            ),
+            ProviderModel(
+                id="claude-sonnet-4-0",
+                display_name="Claude Sonnet 4",
+            ),
+        ]
 
 
 # ---------------------------------------------------------------------------
