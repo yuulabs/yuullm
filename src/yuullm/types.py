@@ -8,8 +8,9 @@ the OpenAI API format.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Callable
-from typing import Any, Literal, Required, TypeGuard, TypedDict, overload
+from typing import Any, Literal, Required, TypeGuard, TypedDict, cast, overload
 
 import msgspec
 
@@ -58,7 +59,10 @@ class ImageItem(_CacheAnnotated):
     image_url: _ImageURL
 
 
-ToolResultContentItem = TextItem | ImageItem
+ToolOutputItem = TextItem | ImageItem
+ToolResultContentItem = ToolOutputItem
+ToolOutput = str | ToolOutputItem | list[ToolOutputItem]
+ToolResultContent = str | list[ToolResultContentItem]
 
 
 class ToolResultItem(_CacheAnnotated):
@@ -66,7 +70,7 @@ class ToolResultItem(_CacheAnnotated):
 
     type: Literal["tool_result"]
     tool_call_id: str
-    content: str | list[ToolResultContentItem]
+    content: ToolResultContent
 
 
 class _InputAudio(TypedDict, total=False):
@@ -98,6 +102,8 @@ class FileItem(_CacheAnnotated):
 DictItem = ToolCallItem | ToolResultItem | TextItem | ImageItem | AudioItem | FileItem
 UserItem = TextItem | ImageItem | AudioItem | FileItem
 AssistantItem = TextItem | ToolCallItem
+ResponseItem = AssistantItem
+ToolArguments = dict[str, Any]
 
 # A content item is always a structured dict.
 # str was previously allowed but is now removed -- use TextItem instead.
@@ -127,6 +133,15 @@ class ToolCall(msgspec.Struct, frozen=True):
     name: str
     arguments: str  # raw JSON string
 
+    def arguments_dict(self) -> ToolArguments:
+        """Decode tool arguments as a JSON object."""
+        return parse_tool_arguments(self.arguments, tool_name=self.name)
+
+    @property
+    def parsed_arguments(self) -> ToolArguments:
+        """Alias for :meth:`arguments_dict`."""
+        return self.arguments_dict()
+
 
 class Response(msgspec.Struct, frozen=True):
     """A fragment of the model's final reply.
@@ -135,7 +150,7 @@ class Response(msgspec.Struct, frozen=True):
     allowing models to output structured or non-text content.
     """
 
-    item: Item
+    item: ResponseItem
 
 
 class Tick(msgspec.Struct, frozen=True):
@@ -245,7 +260,40 @@ def assistant(*items: str | AssistantItem) -> AssistantMessage:
     return ("assistant", [_to_assistant_item(it) for it in items])
 
 
-def tool(tool_call_id: str, content: str | list[TextItem | ImageItem]) -> ToolMessage:
+def coerce_tool_output_item(value: Any) -> ToolOutputItem:
+    """Validate and normalize a single tool output content item."""
+    if not isinstance(value, dict):
+        raise TypeError(
+            f"tool content item must be a dict, got {type(value).__name__!r}"
+        )
+    item = value
+    item_type = item.get("type")
+    if item_type == "text" or item_type == "image_url":
+        return cast(ToolOutputItem, item)
+    raise TypeError(
+        f"tool content item must be a text or image block, got {item_type!r}"
+    )
+
+
+def coerce_tool_output(content: ToolOutput) -> ToolResultContent:
+    """Normalize tool output into the canonical tool-result content shape."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return [coerce_tool_output_item(item) for item in content]
+    return [coerce_tool_output_item(content)]
+
+
+def tool_result(tool_call_id: str, content: ToolOutput) -> ToolResultItem:
+    """Create a tool-result item from string or structured tool output."""
+    return {
+        "type": "tool_result",
+        "tool_call_id": tool_call_id,
+        "content": coerce_tool_output(content),
+    }
+
+
+def tool(tool_call_id: str, content: ToolOutput) -> ToolMessage:
     """Create a tool result message.
 
     Content can be a plain string or a list of content blocks (for multimodal
@@ -258,12 +306,57 @@ def tool(tool_call_id: str, content: str | list[TextItem | ImageItem]) -> ToolMe
         tool("tc_1", "Search returned 5 results.")
         tool("tc_1", [{"type": "text", "text": "Here is the image"}, {"type": "image_url", ...}])
     """
-    result: ToolResultItem = {
-        "type": "tool_result",
-        "tool_call_id": tool_call_id,
-        "content": content,
+    return ("tool", [tool_result(tool_call_id, content)])
+
+
+def parse_tool_arguments(
+    arguments: str, *, tool_name: str | None = None
+) -> ToolArguments:
+    """Decode tool arguments as a JSON object."""
+    if not arguments:
+        return {}
+    try:
+        parsed = json.loads(arguments)
+    except json.JSONDecodeError as exc:
+        prefix = (
+            f"Invalid tool arguments JSON for {tool_name}: "
+            if tool_name is not None
+            else "Invalid tool arguments JSON: "
+        )
+        raise ValueError(f"{prefix}{exc}. Arguments may have been truncated.") from exc
+    if not isinstance(parsed, dict):
+        prefix = (
+            f"Invalid tool arguments JSON for {tool_name}: "
+            if tool_name is not None
+            else "Invalid tool arguments JSON: "
+        )
+        raise ValueError(f"{prefix}decoded arguments must be a JSON object")
+    return parsed
+
+
+@overload
+def tool_arguments(tool_call: ToolCall) -> ToolArguments: ...
+
+
+@overload
+def tool_arguments(tool_call: ToolCallItem) -> ToolArguments: ...
+
+
+def tool_arguments(tool_call: ToolCall | ToolCallItem) -> ToolArguments:
+    """Decode arguments from a stream or message tool call."""
+    if isinstance(tool_call, ToolCall):
+        return tool_call.arguments_dict()
+    return parse_tool_arguments(tool_call["arguments"], tool_name=tool_call["name"])
+
+
+def tool_call_item(tool_call: ToolCall) -> ToolCallItem:
+    """Convert a streamed tool call into an assistant message item."""
+    return {
+        "type": "tool_call",
+        "id": tool_call.id,
+        "name": tool_call.name,
+        "arguments": tool_call.arguments,
     }
-    return ("tool", [result])
 
 
 def is_text_item(item: DictItem) -> TypeGuard[TextItem]:
@@ -288,6 +381,40 @@ def is_audio_item(item: DictItem) -> TypeGuard[AudioItem]:
 
 def is_file_item(item: DictItem) -> TypeGuard[FileItem]:
     return item["type"] == "file"
+
+
+def render_item_text(
+    item: DictItem | ToolResultContentItem | ToolCall | Response | Reasoning,
+) -> str:
+    """Render a readable text form for a message or stream item."""
+    if isinstance(item, Response):
+        return render_item_text(item.item)
+    if isinstance(item, Reasoning):
+        return render_item_text(item.item)
+    if isinstance(item, ToolCall):
+        return f"{item.name}({item.arguments})"
+    if is_text_item(item):
+        return item["text"]
+    if is_image_item(item):
+        url = item["image_url"]["url"]
+        return "<base64 image>" if url.startswith("data:") else f"<image {url}>"
+    if is_audio_item(item):
+        return "<audio>"
+    if is_file_item(item):
+        return "<file>"
+    if is_tool_call_item(item):
+        return f"{item['name']}({item['arguments']})"
+    if is_tool_result_item(item):
+        content = item["content"]
+        if isinstance(content, str):
+            return content
+        return "".join(render_item_text(sub_item) for sub_item in content)
+    raise AssertionError(f"Unsupported item type: {item['type']}")
+
+
+def render_message_text(message: Message) -> str:
+    """Render a readable text form for a whole message."""
+    return "".join(render_item_text(item) for item in message[1])
 
 
 @overload
@@ -431,20 +558,20 @@ def with_last_item_cache_control(
 ) -> Message:
     """Return a copy of *message* with cache metadata on its final item."""
     if message[0] == "system":
-        items = list(message[1])
-        items[-1] = with_cache_control(items[-1], cache_control)
-        return ("system", items)
+        system_items = list(message[1])
+        system_items[-1] = with_cache_control(system_items[-1], cache_control)
+        return ("system", system_items)
     if message[0] == "user":
-        items = list(message[1])
-        items[-1] = with_cache_control(items[-1], cache_control)
-        return ("user", items)
+        user_items = list(cast(UserMessage, message)[1])
+        user_items[-1] = with_cache_control(user_items[-1], cache_control)
+        return ("user", user_items)
     if message[0] == "assistant":
-        items = list(message[1])
-        items[-1] = with_cache_control(items[-1], cache_control)
-        return ("assistant", items)
-    items = list(message[1])
-    items[-1] = with_cache_control(items[-1], cache_control)
-    return ("tool", items)
+        assistant_items = list(cast(AssistantMessage, message)[1])
+        assistant_items[-1] = with_cache_control(assistant_items[-1], cache_control)
+        return ("assistant", assistant_items)
+    tool_items = list(cast(ToolMessage, message)[1])
+    tool_items[-1] = with_cache_control(tool_items[-1], cache_control)
+    return ("tool", tool_items)
 
 
 # ---------------------------------------------------------------------------
