@@ -24,11 +24,9 @@ from ..types import (
     RawChunkHook,
     StreamResult,
     is_text_item,
-    is_tool_call_item,
-    is_tool_result_item,
-    to_plain_dict,
     with_last_item_cache_control,
 )
+from ._openai_chat import convert_openai_chat_messages
 from .openai import OpenAIChatCompletionProvider
 
 
@@ -102,121 +100,8 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
 
     @staticmethod
     def _convert_messages(messages: Sequence[Message]) -> list[dict[str, Any]]:
-        """Convert messages, preserving ``cache_control`` on content blocks.
-
-        OpenRouter forwards ``cache_control`` to upstream vendors, but it
-        must appear on individual content blocks (array format), not on a
-        plain string.  When no ``cache_control`` is present we fall back to
-        the compact string format.
-        """
-        result: list[dict[str, Any]] = []
-        for message in messages:
-            if message.role == "system":
-                items = message.content
-                has_cc = any("cache_control" in it for it in items)
-                if has_cc:
-                    result.append(
-                        {
-                            "role": "system",
-                            "content": [to_plain_dict(item) for item in items],
-                            **message.provider_extra,
-                        }
-                    )
-                else:
-                    text = "".join(it["text"] for it in items if is_text_item(it))
-                    result.append(
-                        {
-                            "role": "system",
-                            "content": text,
-                            **message.provider_extra,
-                        }
-                    )
-
-            elif message.role == "user":
-                items = message.content
-                has_cc = any("cache_control" in it for it in items)
-                user_text_parts: list[str] = []
-                all_text = True
-                for item in items:
-                    if is_text_item(item):
-                        user_text_parts.append(item["text"])
-                    else:
-                        all_text = False
-                        break
-                if has_cc:
-                    result.append(
-                        {
-                            "role": "user",
-                            "content": [to_plain_dict(item) for item in items],
-                            **message.provider_extra,
-                        }
-                    )
-                elif all_text:
-                    result.append(
-                        {
-                            "role": "user",
-                            "content": "".join(user_text_parts),
-                            **message.provider_extra,
-                        }
-                    )
-                else:
-                    result.append(
-                        {
-                            "role": "user",
-                            "content": [to_plain_dict(item) for item in items],
-                            **message.provider_extra,
-                        }
-                    )
-
-            elif message.role == "assistant":
-                items = message.content
-                entry: dict[str, Any] = {
-                    "role": "assistant",
-                    **message.provider_extra,
-                }
-                has_cc = any("cache_control" in it for it in items)
-                text_blocks: list[dict[str, Any]] = []
-                assistant_text_parts: list[str] = []
-                tool_calls: list[dict[str, Any]] = []
-                for item in items:
-                    if is_text_item(item):
-                        text_blocks.append(to_plain_dict(item))
-                        assistant_text_parts.append(item["text"])
-                    elif is_tool_call_item(item):
-                        tool_calls.append(
-                            {
-                                "id": item["id"],
-                                "type": "function",
-                                "function": {
-                                    "name": item["name"],
-                                    "arguments": item["arguments"],
-                                },
-                            }
-                        )
-                if text_blocks:
-                    if has_cc:
-                        entry["content"] = text_blocks
-                    else:
-                        entry["content"] = "".join(assistant_text_parts)
-                if tool_calls:
-                    entry["tool_calls"] = tool_calls
-                result.append(entry)
-
-            else:
-                items = message.content
-                for item in items:
-                    if not is_tool_result_item(item):
-                        raise TypeError("tool messages only accept tool-result items")
-                    result.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": item["tool_call_id"],
-                            "content": item["content"],
-                            **message.provider_extra,
-                        }
-                    )
-
-        return result
+        """Convert messages, preserving ``cache_control`` on content blocks."""
+        return convert_openai_chat_messages(messages, preserve_cache_control=True)
 
     # ------------------------------------------------------------------
     # Sub-vendor cache routing (private)

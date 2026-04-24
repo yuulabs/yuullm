@@ -25,11 +25,8 @@ from ..types import (
     Tick,
     ToolCall,
     Usage,
-    is_text_item,
-    is_tool_call_item,
-    is_tool_result_item,
-    to_plain_dict,
 )
+from ._openai_chat import convert_openai_chat_messages
 
 
 class OpenAIChatCompletionProvider:
@@ -115,102 +112,8 @@ class OpenAIChatCompletionProvider:
 
     @staticmethod
     def _convert_messages(messages: Sequence[Message]) -> list[dict[str, Any]]:
-        """Convert yuullm messages to OpenAI chat format.
-
-        All items are dicts with a ``type`` key. Dispatch by type:
-        - text → simple content or multimodal content array
-        - tool_call → assistant tool_calls
-        - tool_result → tool result messages
-        - image_url, input_audio, file → multimodal content blocks
-        """
-        result: list[dict[str, Any]] = []
-        for message in messages:
-            if message.role == "system":
-                items = message.content
-                system_text_parts: list[str] = []
-                for item in items:
-                    if item["type"] == "text":
-                        system_text_parts.append(item["text"])
-                result.append(
-                    {
-                        "role": "system",
-                        "content": "".join(system_text_parts),
-                        **message.provider_extra,
-                    }
-                )
-
-            elif message.role == "user":
-                items = message.content
-                # If all items are text, use simple string content
-                user_text_parts: list[str] = []
-                all_text = True
-                for item in items:
-                    if is_text_item(item):
-                        user_text_parts.append(item["text"])
-                    else:
-                        all_text = False
-                        break
-                if all_text:
-                    result.append(
-                        {
-                            "role": "user",
-                            "content": "".join(user_text_parts),
-                            **message.provider_extra,
-                        }
-                    )
-                else:
-                    # Multimodal: pass content blocks as-is (already dict)
-                    result.append(
-                        {
-                            "role": "user",
-                            "content": [to_plain_dict(item) for item in items],
-                            **message.provider_extra,
-                        }
-                    )
-
-            elif message.role == "assistant":
-                items = message.content
-                entry: dict[str, Any] = {
-                    "role": "assistant",
-                    **message.provider_extra,
-                }
-                assistant_text_parts: list[str] = []
-                tool_calls: list[dict[str, Any]] = []
-                for item in items:
-                    if is_text_item(item):
-                        assistant_text_parts.append(item["text"])
-                    elif is_tool_call_item(item):
-                        tool_calls.append(
-                            {
-                                "id": item["id"],
-                                "type": "function",
-                                "function": {
-                                    "name": item["name"],
-                                    "arguments": item["arguments"],
-                                },
-                            }
-                        )
-                if assistant_text_parts:
-                    entry["content"] = "".join(assistant_text_parts)
-                if tool_calls:
-                    entry["tool_calls"] = tool_calls
-                result.append(entry)
-
-            else:
-                items = message.content
-                for item in items:
-                    if item["type"] != "tool_result":
-                        raise TypeError("tool messages only accept tool-result items")
-                    result.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": item["tool_call_id"],
-                            "content": item["content"],
-                            **message.provider_extra,
-                        }
-                    )
-
-        return result
+        """Convert yuullm messages to OpenAI chat format."""
+        return convert_openai_chat_messages(messages, preserve_cache_control=False)
 
     @staticmethod
     def _convert_tools(tools: list[dict[str, Any]]) -> list[dict]:

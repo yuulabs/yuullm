@@ -11,3 +11,4 @@ wheels/
 .claude
 .pytest_cache
 .env
+.codex

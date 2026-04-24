@@ -29,10 +29,14 @@ from ..types import (
     Usage,
     is_image_item,
     is_text_item,
-    is_tool_call_item,
-    is_tool_result_item,
     to_plain_dict,
     with_last_item_cache_control,
+)
+from ._content import (
+    content_blocks,
+    content_items,
+    split_assistant_items,
+    tool_result_items,
 )
 
 
@@ -135,7 +139,10 @@ class AnthropicMessagesProvider:
         rest: list[Message] = []
         for message in messages:
             if message.role == "system":
-                system_blocks = [to_plain_dict(item) for item in message.content]
+                system_blocks = content_blocks(
+                    content_items(message.content, role="system"),
+                    preserve_cache_control=True,
+                )
             else:
                 rest.append(message)
         return system_blocks, rest
@@ -149,63 +156,41 @@ class AnthropicMessagesProvider:
         result: list[dict[str, Any]] = []
         for message in messages:
             if message.role == "user":
-                items = message.content
-                # If all items are text-only, use simple string content
-                text_parts: list[str] = []
-                all_text = True
-                for item in items:
-                    if is_text_item(item):
-                        text_parts.append(item["text"])
-                    else:
-                        all_text = False
-                        break
-                if all_text:
-                    result.append(
-                        {
-                            "role": "user",
-                            "content": "".join(text_parts),
-                            **message.provider_extra,
-                        }
-                    )
-                else:
-                    result.append(
-                        {
-                            "role": "user",
-                            "content": [to_plain_dict(item) for item in items],
-                            **message.provider_extra,
-                        }
-                    )
+                items = content_items(message.content, role="user")
+                result.append(
+                    {
+                        "role": "user",
+                        "content": content_blocks(
+                            items, preserve_cache_control=True
+                        ),
+                        **message.provider_extra,
+                    }
+                )
 
             elif message.role == "assistant":
-                items = message.content
-                content_blocks: list[dict[str, Any]] = []
-                for item in items:
-                    if is_text_item(item):
-                        content_blocks.append(to_plain_dict(item))
-                    elif is_tool_call_item(item):
-                        args = item["arguments"]
-                        content_blocks.append(
-                            {
-                                "type": "tool_use",
-                                "id": item["id"],
-                                "name": item["name"],
-                                "input": json.loads(args),
-                            }
-                        )
+                content, tool_calls = split_assistant_items(message.content)
+                blocks = content_blocks(content, preserve_cache_control=True)
+                for item in tool_calls:
+                    args = item["arguments"]
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": item["id"],
+                            "name": item["name"],
+                            "input": json.loads(args),
+                        }
+                    )
                 result.append(
                     {
                         "role": "assistant",
-                        "content": content_blocks,
+                        "content": blocks,
                         **message.provider_extra,
                     }
                 )
 
             elif message.role == "tool":
-                items = message.content
                 tool_results: list[dict[str, Any]] = []
-                for item in items:
-                    if not is_tool_result_item(item):
-                        raise TypeError("tool messages only accept tool-result items")
+                for item in tool_result_items(message.content):
                     raw_content = item["content"]
                     if isinstance(raw_content, list):
                         anthropic_blocks: list[dict[str, Any]] = []
