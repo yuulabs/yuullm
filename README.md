@@ -10,7 +10,7 @@ yuullm is **stateless** — no session, no history management. You own the messa
 
 ### Design in One Sentence
 
-Messages are tuples, tools are dicts, output items are typed structs — minimal abstraction, maximum interop.
+Messages and output items are typed structs, tools and content blocks are plain dicts — minimal abstraction, maximum interop.
 
 ## Installation
 
@@ -91,7 +91,7 @@ while True:
 
 - Use `match`/`case` to dispatch all four stream item types. `Tick` carries no payload — ignore it unless you have a reason not to.
 - The `while True` loop handles multi-round tool use (the model may chain multiple tool calls before producing a final text response).
-- `yuullm.assistant(...)` and `yuullm.tool(...)` are helpers that build the correct `(role, items)` tuples.
+- `yuullm.assistant(...)` and `yuullm.tool(...)` are helpers that build `Message` structs with the right role and content.
 
 ## Hooks: Provider-Level Visibility
 
@@ -225,21 +225,30 @@ Matching is exact on `(provider, model_id)`. No fuzzy matching.
 ### Messages
 
 ```python
-Message = tuple[str, list[Item]]   # (role, items)
-Item = str | dict[str, Any]        # text or structured content (image, audio, tool_call, ...)
+ContentItem = TextItem | ImageItem | AudioItem | FileItem
+ProtocolItem = ToolCallItem | ToolResultItem
+MessageItem = ContentItem | ProtocolItem
+
+Content = list[ContentItem]
+MessageContent = list[MessageItem]
+
+class Message:
+    role: Role
+    content: MessageContent
+    provider_extra: dict[str, Any]
 ```
 
 Helper functions: `system(content)`, `user(*items)`, `assistant(*items)`, `tool(tool_call_id, content)`.
 
-Messages are plain tuples — you can also write `("user", ["Hello!"])` directly without helpers.
+Provider-specific message options can be passed through helper keyword arguments and are stored in `provider_extra`.
 
 ### Stream Items
 
 | Type | Fields | Description |
 |------|--------|-------------|
-| `Reasoning` | `item: Item` | Chain-of-thought fragment |
+| `Reasoning` | `item: ContentItem` | Chain-of-thought fragment |
 | `ToolCall` | `id`, `name`, `arguments` | Tool invocation (`arguments` is raw JSON string) |
-| `Response` | `item: Item` | Final reply fragment |
+| `Response` | `item: ContentItem` | Final reply fragment |
 | `Tick` | *(none)* | Heartbeat during tool-call streaming (only when `on_raw_chunk` is set) |
 
 ### YLLMClient

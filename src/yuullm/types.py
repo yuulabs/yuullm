@@ -1,9 +1,8 @@
 """Core types for yuullm.
 
-Lightweight, minimal abstractions. Messages are plain tuples, tools are
-plain dicts.  Only output stream types and usage/cost use msgspec structs.
-Content items use TypedDict for type safety, with structures aligned to
-the OpenAI API format.
+Content blocks remain plain ``TypedDict`` values aligned to provider APIs.
+Messages are a single ``msgspec.Struct`` with role, content, and optional
+provider-specific metadata.
 """
 
 from __future__ import annotations
@@ -59,20 +58,6 @@ class ImageItem(_CacheAnnotated):
     image_url: _ImageURL
 
 
-ToolOutputItem = TextItem | ImageItem
-ToolResultContentItem = ToolOutputItem
-ToolOutput = str | ToolOutputItem | list[ToolOutputItem]
-ToolResultContent = str | list[ToolResultContentItem]
-
-
-class ToolResultItem(_CacheAnnotated):
-    """A tool execution result embedded in a tool message."""
-
-    type: Literal["tool_result"]
-    tool_call_id: str
-    content: ToolResultContent
-
-
 class _InputAudio(TypedDict, total=False):
     data: Required[str]  # base64 encoded
     format: Required[Literal["wav", "mp3"]]
@@ -98,16 +83,24 @@ class FileItem(_CacheAnnotated):
     file: _FileData
 
 
-# The union of all structured content items.
-DictItem = ToolCallItem | ToolResultItem | TextItem | ImageItem | AudioItem | FileItem
-UserItem = TextItem | ImageItem | AudioItem | FileItem
-AssistantItem = TextItem | ToolCallItem
-ResponseItem = AssistantItem
-ToolArguments = dict[str, Any]
+ContentItem = TextItem | ImageItem | AudioItem | FileItem
+Content = list[ContentItem]
+ToolResultContent = str | Content
 
-# A content item is always a structured dict.
-# str was previously allowed but is now removed -- use TextItem instead.
-Item = DictItem
+
+class ToolResultItem(_CacheAnnotated):
+    """A tool execution result embedded in a tool message."""
+
+    type: Literal["tool_result"]
+    tool_call_id: str
+    content: ToolResultContent
+
+
+ProtocolItem = ToolCallItem | ToolResultItem
+MessageItem = ContentItem | ProtocolItem
+MessageContent = list[MessageItem]
+ToolOutput = str | ContentItem | Content
+ToolArguments = dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -118,12 +111,10 @@ Item = DictItem
 class Reasoning(msgspec.Struct, frozen=True):
     """A fragment of the model's chain-of-thought / extended thinking.
 
-    The content is always a content dict — typically a ``TextItem``
-    (``{"type": "text", "text": "..."}``).  This mirrors :class:`Response`,
-    which also carries an ``Item``.
+    The content is always a content item, typically a ``TextItem``.
     """
 
-    item: Item
+    item: ContentItem
 
 
 class ToolCall(msgspec.Struct, frozen=True):
@@ -146,11 +137,10 @@ class ToolCall(msgspec.Struct, frozen=True):
 class Response(msgspec.Struct, frozen=True):
     """A fragment of the model's final reply.
 
-    The content can be plain text (str) or multimodal content (dict),
-    allowing models to output structured or non-text content.
+    The content is a provider-normalized content item.
     """
 
-    item: ResponseItem
+    item: ContentItem
 
 
 class Tick(msgspec.Struct, frozen=True):
@@ -165,6 +155,7 @@ class Tick(msgspec.Struct, frozen=True):
     Consumers that only care about ``Reasoning | ToolCall | Response``
     can safely ignore ``Tick`` — it carries no payload.
     """
+    pass
 
 
 StreamItem = Reasoning | ToolCall | Response | Tick
@@ -179,13 +170,20 @@ class ProviderModel(msgspec.Struct, frozen=True):
 
 
 Role = Literal["system", "user", "assistant", "tool"]
-SystemMessage = tuple[Literal["system"], list[TextItem]]
-UserMessage = tuple[Literal["user"], list[UserItem]]
-AssistantMessage = tuple[Literal["assistant"], list[AssistantItem]]
-ToolMessage = tuple[Literal["tool"], list[ToolResultItem]]
-Message = SystemMessage | UserMessage | AssistantMessage | ToolMessage
 
-# History is just a list of messages
+
+class Message(msgspec.Struct, frozen=True):
+    """A provider-agnostic chat message.
+
+    ``provider_extra`` is copied through provider conversion so callers can
+    pass vendor-specific message options without expanding yuullm's core model.
+    """
+
+    role: Role
+    content: MessageContent
+    provider_extra: dict[str, Any] = msgspec.field(default_factory=dict)
+
+
 History = list[Message]
 
 
@@ -194,23 +192,28 @@ History = list[Message]
 # ---------------------------------------------------------------------------
 
 
-@overload
-def _to_item(it: str) -> TextItem: ...
+def text(content: str) -> TextItem:
+    """Create a text content item."""
+    return {"type": "text", "text": content}
 
 
 @overload
-def _to_item(it: DictItem) -> DictItem: ...
+def _to_message_item(it: str) -> TextItem: ...
 
 
-def _to_item(it: str | DictItem) -> Item:
+@overload
+def _to_message_item(it: MessageItem) -> MessageItem: ...
+
+
+def _to_message_item(it: str | MessageItem) -> MessageItem:
     """Convert a str to TextItem; pass dicts through."""
     if isinstance(it, str):
-        return {"type": "text", "text": it}
+        return text(it)
     return it
 
 
-def _to_user_item(it: str | UserItem) -> UserItem:
-    item = _to_item(it)
+def _to_content_item(it: str | ContentItem) -> ContentItem:
+    item = _to_message_item(it)
     if (
         is_text_item(item)
         or is_image_item(item)
@@ -221,19 +224,19 @@ def _to_user_item(it: str | UserItem) -> UserItem:
     raise TypeError("user() only accepts text, image, audio, and file items")
 
 
-def _to_assistant_item(it: str | AssistantItem) -> AssistantItem:
-    item = _to_item(it)
+def _to_assistant_item(it: str | TextItem | ToolCallItem) -> TextItem | ToolCallItem:
+    item = _to_message_item(it)
     if is_text_item(item) or is_tool_call_item(item):
         return item
     raise TypeError("assistant() only accepts text and tool-call items")
 
 
-def system(content: str) -> SystemMessage:
+def system(content: str, **provider_extra: Any) -> Message:
     """Create a system message."""
-    return ("system", [{"type": "text", "text": content}])
+    return Message("system", [text(content)], provider_extra)
 
 
-def user(*items: str | UserItem) -> UserMessage:
+def user(*items: str | ContentItem, **provider_extra: Any) -> Message:
     """Create a user message with one or more content items.
 
     Examples::
@@ -241,10 +244,12 @@ def user(*items: str | UserItem) -> UserMessage:
         user("Hello!")
         user("What is this?", ImageItem(type="image_url", image_url={"url": "..."}))
     """
-    return ("user", [_to_user_item(it) for it in items])
+    return Message("user", [_to_content_item(it) for it in items], provider_extra)
 
 
-def assistant(*items: str | AssistantItem) -> AssistantMessage:
+def assistant(
+    *items: str | TextItem | ToolCallItem, **provider_extra: Any
+) -> Message:
     """Create an assistant message.
 
     Examples::
@@ -257,10 +262,10 @@ def assistant(*items: str | AssistantItem) -> AssistantMessage:
             arguments='{"q": "test"}',
         ))
     """
-    return ("assistant", [_to_assistant_item(it) for it in items])
+    return Message("assistant", [_to_assistant_item(it) for it in items], provider_extra)
 
 
-def coerce_tool_output_item(value: Any) -> ToolOutputItem:
+def coerce_tool_output_item(value: Any) -> ContentItem:
     """Validate and normalize a single tool output content item."""
     if not isinstance(value, dict):
         raise TypeError(
@@ -268,10 +273,10 @@ def coerce_tool_output_item(value: Any) -> ToolOutputItem:
         )
     item = value
     item_type = item.get("type")
-    if item_type == "text" or item_type == "image_url":
-        return cast(ToolOutputItem, item)
+    if item_type in {"text", "image_url", "input_audio", "file"}:
+        return cast(ContentItem, item)
     raise TypeError(
-        f"tool content item must be a text or image block, got {item_type!r}"
+        f"tool content item must be a content block, got {item_type!r}"
     )
 
 
@@ -293,7 +298,9 @@ def tool_result(tool_call_id: str, content: ToolOutput) -> ToolResultItem:
     }
 
 
-def tool(tool_call_id: str, content: ToolOutput) -> ToolMessage:
+def tool(
+    tool_call_id: str, content: ToolOutput, **provider_extra: Any
+) -> Message:
     """Create a tool result message.
 
     Content can be a plain string or a list of content blocks (for multimodal
@@ -306,7 +313,7 @@ def tool(tool_call_id: str, content: ToolOutput) -> ToolMessage:
         tool("tc_1", "Search returned 5 results.")
         tool("tc_1", [{"type": "text", "text": "Here is the image"}, {"type": "image_url", ...}])
     """
-    return ("tool", [tool_result(tool_call_id, content)])
+    return Message("tool", [tool_result(tool_call_id, content)], provider_extra)
 
 
 def parse_tool_arguments(
@@ -359,32 +366,32 @@ def tool_call_item(tool_call: ToolCall) -> ToolCallItem:
     }
 
 
-def is_text_item(item: DictItem) -> TypeGuard[TextItem]:
+def is_text_item(item: MessageItem) -> TypeGuard[TextItem]:
     return item["type"] == "text"
 
 
-def is_tool_call_item(item: DictItem) -> TypeGuard[ToolCallItem]:
+def is_tool_call_item(item: MessageItem) -> TypeGuard[ToolCallItem]:
     return item["type"] == "tool_call"
 
 
-def is_tool_result_item(item: DictItem) -> TypeGuard[ToolResultItem]:
+def is_tool_result_item(item: MessageItem) -> TypeGuard[ToolResultItem]:
     return item["type"] == "tool_result"
 
 
-def is_image_item(item: DictItem) -> TypeGuard[ImageItem]:
+def is_image_item(item: MessageItem) -> TypeGuard[ImageItem]:
     return item["type"] == "image_url"
 
 
-def is_audio_item(item: DictItem) -> TypeGuard[AudioItem]:
+def is_audio_item(item: MessageItem) -> TypeGuard[AudioItem]:
     return item["type"] == "input_audio"
 
 
-def is_file_item(item: DictItem) -> TypeGuard[FileItem]:
+def is_file_item(item: MessageItem) -> TypeGuard[FileItem]:
     return item["type"] == "file"
 
 
 def render_item_text(
-    item: DictItem | ToolResultContentItem | ToolCall | Response | Reasoning,
+    item: MessageItem | ToolCall | Response | Reasoning,
 ) -> str:
     """Render a readable text form for a message or stream item."""
     if isinstance(item, Response):
@@ -414,7 +421,7 @@ def render_item_text(
 
 def render_message_text(message: Message) -> str:
     """Render a readable text form for a whole message."""
-    return "".join(render_item_text(item) for item in message[1])
+    return "".join(render_item_text(item) for item in message.content)
 
 
 @overload
@@ -445,7 +452,7 @@ def with_cache_control(item: AudioItem, cache_control: CacheControl) -> AudioIte
 def with_cache_control(item: FileItem, cache_control: CacheControl) -> FileItem: ...
 
 
-def with_cache_control(item: DictItem, cache_control: CacheControl) -> DictItem:
+def with_cache_control(item: MessageItem, cache_control: CacheControl) -> MessageItem:
     """Return a copy of *item* with provider cache metadata attached."""
     if is_text_item(item):
         return {
@@ -489,7 +496,7 @@ def with_cache_control(item: DictItem, cache_control: CacheControl) -> DictItem:
     raise AssertionError(f"Unsupported item type: {item['type']}")
 
 
-def to_plain_dict(item: DictItem) -> dict[str, Any]:
+def to_plain_dict(item: MessageItem) -> dict[str, Any]:
     """Convert a TypedDict item into a plain dict for provider SDK payloads."""
     result: dict[str, Any]
     if is_text_item(item):
@@ -502,10 +509,15 @@ def to_plain_dict(item: DictItem) -> dict[str, Any]:
             "arguments": item["arguments"],
         }
     elif is_tool_result_item(item):
+        content: str | list[dict[str, Any]]
+        if isinstance(item["content"], str):
+            content = item["content"]
+        else:
+            content = [to_plain_dict(block) for block in item["content"]]
         result = {
             "type": "tool_result",
             "tool_call_id": item["tool_call_id"],
-            "content": item["content"],
+            "content": content,
         }
     elif is_image_item(item):
         result = {
@@ -529,49 +541,13 @@ def to_plain_dict(item: DictItem) -> dict[str, Any]:
     return result
 
 
-@overload
-def with_last_item_cache_control(
-    message: SystemMessage, cache_control: CacheControl
-) -> SystemMessage: ...
-
-
-@overload
-def with_last_item_cache_control(
-    message: UserMessage, cache_control: CacheControl
-) -> UserMessage: ...
-
-
-@overload
-def with_last_item_cache_control(
-    message: AssistantMessage, cache_control: CacheControl
-) -> AssistantMessage: ...
-
-
-@overload
-def with_last_item_cache_control(
-    message: ToolMessage, cache_control: CacheControl
-) -> ToolMessage: ...
-
-
 def with_last_item_cache_control(
     message: Message, cache_control: CacheControl
 ) -> Message:
     """Return a copy of *message* with cache metadata on its final item."""
-    if message[0] == "system":
-        system_items = list(message[1])
-        system_items[-1] = with_cache_control(system_items[-1], cache_control)
-        return ("system", system_items)
-    if message[0] == "user":
-        user_items = list(cast(UserMessage, message)[1])
-        user_items[-1] = with_cache_control(user_items[-1], cache_control)
-        return ("user", user_items)
-    if message[0] == "assistant":
-        assistant_items = list(cast(AssistantMessage, message)[1])
-        assistant_items[-1] = with_cache_control(assistant_items[-1], cache_control)
-        return ("assistant", assistant_items)
-    tool_items = list(cast(ToolMessage, message)[1])
-    tool_items[-1] = with_cache_control(tool_items[-1], cache_control)
-    return ("tool", tool_items)
+    items = list(message.content)
+    items[-1] = with_cache_control(items[-1], cache_control)
+    return Message(message.role, items, dict(message.provider_extra))
 
 
 # ---------------------------------------------------------------------------

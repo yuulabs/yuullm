@@ -25,6 +25,7 @@ from ..types import (
     StreamResult,
     is_text_item,
     is_tool_call_item,
+    is_tool_result_item,
     to_plain_dict,
     with_last_item_cache_control,
 )
@@ -110,28 +111,35 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
         """
         result: list[dict[str, Any]] = []
         for message in messages:
-            if message[0] == "system":
-                items = message[1]
+            if message.role == "system":
+                items = message.content
                 has_cc = any("cache_control" in it for it in items)
                 if has_cc:
                     result.append(
                         {
                             "role": "system",
                             "content": [to_plain_dict(item) for item in items],
+                            **message.provider_extra,
                         }
                     )
                 else:
-                    text = "".join(it["text"] for it in items)
-                    result.append({"role": "system", "content": text})
+                    text = "".join(it["text"] for it in items if is_text_item(it))
+                    result.append(
+                        {
+                            "role": "system",
+                            "content": text,
+                            **message.provider_extra,
+                        }
+                    )
 
-            elif message[0] == "user":
-                items = message[1]
+            elif message.role == "user":
+                items = message.content
                 has_cc = any("cache_control" in it for it in items)
-                text_parts: list[str] = []
+                user_text_parts: list[str] = []
                 all_text = True
                 for item in items:
                     if is_text_item(item):
-                        text_parts.append(item["text"])
+                        user_text_parts.append(item["text"])
                     else:
                         all_text = False
                         break
@@ -140,29 +148,40 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
                         {
                             "role": "user",
                             "content": [to_plain_dict(item) for item in items],
+                            **message.provider_extra,
                         }
                     )
                 elif all_text:
-                    result.append({"role": "user", "content": "".join(text_parts)})
+                    result.append(
+                        {
+                            "role": "user",
+                            "content": "".join(user_text_parts),
+                            **message.provider_extra,
+                        }
+                    )
                 else:
                     result.append(
                         {
                             "role": "user",
                             "content": [to_plain_dict(item) for item in items],
+                            **message.provider_extra,
                         }
                     )
 
-            elif message[0] == "assistant":
-                items = message[1]
-                entry: dict[str, Any] = {"role": "assistant"}
+            elif message.role == "assistant":
+                items = message.content
+                entry: dict[str, Any] = {
+                    "role": "assistant",
+                    **message.provider_extra,
+                }
                 has_cc = any("cache_control" in it for it in items)
                 text_blocks: list[dict[str, Any]] = []
-                text_parts: list[str] = []
+                assistant_text_parts: list[str] = []
                 tool_calls: list[dict[str, Any]] = []
                 for item in items:
                     if is_text_item(item):
                         text_blocks.append(to_plain_dict(item))
-                        text_parts.append(item["text"])
+                        assistant_text_parts.append(item["text"])
                     elif is_tool_call_item(item):
                         tool_calls.append(
                             {
@@ -178,19 +197,22 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
                     if has_cc:
                         entry["content"] = text_blocks
                     else:
-                        entry["content"] = "".join(text_parts)
+                        entry["content"] = "".join(assistant_text_parts)
                 if tool_calls:
                     entry["tool_calls"] = tool_calls
                 result.append(entry)
 
             else:
-                items = message[1]
+                items = message.content
                 for item in items:
+                    if not is_tool_result_item(item):
+                        raise TypeError("tool messages only accept tool-result items")
                     result.append(
                         {
                             "role": "tool",
                             "tool_call_id": item["tool_call_id"],
                             "content": item["content"],
+                            **message.provider_extra,
                         }
                     )
 
@@ -297,7 +319,11 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
         max_breakpoints = 4
 
         for message in messages:
-            if message[0] == "system" and message[1] and breakpoints_used < max_breakpoints:
+            if (
+                message.role == "system"
+                and message.content
+                and breakpoints_used < max_breakpoints
+            ):
                 breakpoints_used += 1
                 result.append(with_last_item_cache_control(message, cc))
             else:
@@ -311,9 +337,9 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
             # skip the last message (it's the new user turn)
             for i in range(len(result) - 2, -1, -1):
                 message = result[i]
-                if message[0] == "system":
+                if message.role == "system":
                     continue  # already marked
-                if message[1]:
+                if message.content:
                     result[i] = with_last_item_cache_control(message, cc)
                     breakpoints_used += 1
                     break
@@ -333,12 +359,13 @@ class OpenRouterProvider(OpenAIChatCompletionProvider):
         char_count = 0
 
         for i, message in enumerate(messages):
-            if message[0] == "system":
-                for it in message[1]:
-                    char_count += len(it["text"])
+            if message.role == "system":
+                for it in message.content:
+                    if is_text_item(it):
+                        char_count += len(it["text"])
             elif i < len(messages) - 1:
                 # All messages before the last one are prefix
-                for it in message[1]:
+                for it in message.content:
                     if is_text_item(it):
                         char_count += len(it["text"])
                     else:

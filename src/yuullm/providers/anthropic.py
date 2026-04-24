@@ -30,6 +30,7 @@ from ..types import (
     is_image_item,
     is_text_item,
     is_tool_call_item,
+    is_tool_result_item,
     to_plain_dict,
     with_last_item_cache_control,
 )
@@ -119,7 +120,7 @@ class AnthropicMessagesProvider:
         return models
 
     # ------------------------------------------------------------------
-    # Message conversion: (role, items) tuples -> Anthropic API format
+    # Message conversion: Message structs -> Anthropic API format
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -133,22 +134,22 @@ class AnthropicMessagesProvider:
         system_blocks: list[dict[str, Any]] | None = None
         rest: list[Message] = []
         for message in messages:
-            if message[0] == "system":
-                system_blocks = [to_plain_dict(item) for item in message[1]]
+            if message.role == "system":
+                system_blocks = [to_plain_dict(item) for item in message.content]
             else:
                 rest.append(message)
         return system_blocks, rest
 
     @staticmethod
     def _convert_messages(messages: Sequence[Message]) -> list[dict[str, Any]]:
-        """Convert (role, items) tuples to Anthropic messages format.
+        """Convert yuullm messages to Anthropic messages format.
 
         All items are dicts with a ``type`` key. Dispatch by type.
         """
         result: list[dict[str, Any]] = []
         for message in messages:
-            if message[0] == "user":
-                items = message[1]
+            if message.role == "user":
+                items = message.content
                 # If all items are text-only, use simple string content
                 text_parts: list[str] = []
                 all_text = True
@@ -163,6 +164,7 @@ class AnthropicMessagesProvider:
                         {
                             "role": "user",
                             "content": "".join(text_parts),
+                            **message.provider_extra,
                         }
                     )
                 else:
@@ -170,11 +172,12 @@ class AnthropicMessagesProvider:
                         {
                             "role": "user",
                             "content": [to_plain_dict(item) for item in items],
+                            **message.provider_extra,
                         }
                     )
 
-            elif message[0] == "assistant":
-                items = message[1]
+            elif message.role == "assistant":
+                items = message.content
                 content_blocks: list[dict[str, Any]] = []
                 for item in items:
                     if is_text_item(item):
@@ -189,12 +192,20 @@ class AnthropicMessagesProvider:
                                 "input": json.loads(args),
                             }
                         )
-                result.append({"role": "assistant", "content": content_blocks})
+                result.append(
+                    {
+                        "role": "assistant",
+                        "content": content_blocks,
+                        **message.provider_extra,
+                    }
+                )
 
-            elif message[0] == "tool":
-                items = message[1]
+            elif message.role == "tool":
+                items = message.content
                 tool_results: list[dict[str, Any]] = []
                 for item in items:
+                    if not is_tool_result_item(item):
+                        raise TypeError("tool messages only accept tool-result items")
                     raw_content = item["content"]
                     if isinstance(raw_content, list):
                         anthropic_blocks: list[dict[str, Any]] = []
@@ -234,7 +245,13 @@ class AnthropicMessagesProvider:
                         }
                     )
                 if tool_results:
-                    result.append({"role": "user", "content": tool_results})
+                    result.append(
+                        {
+                            "role": "user",
+                            "content": tool_results,
+                            **message.provider_extra,
+                        }
+                    )
 
         return result
 
@@ -360,7 +377,7 @@ class AnthropicMessagesProvider:
         breakpoints = 0
 
         for message in messages:
-            if message[0] == "system" and message[1] and breakpoints < 4:
+            if message.role == "system" and message.content and breakpoints < 4:
                 breakpoints += 1
                 result.append(with_last_item_cache_control(message, cc))
             else:
@@ -370,9 +387,9 @@ class AnthropicMessagesProvider:
         if breakpoints < 4 and len(result) >= 2:
             for i in range(len(result) - 2, -1, -1):
                 message = result[i]
-                if message[0] == "system":
+                if message.role == "system":
                     continue
-                if message[1]:
+                if message.content:
                     result[i] = with_last_item_cache_control(message, cc)
                     break
 
@@ -397,11 +414,12 @@ class AnthropicMessagesProvider:
         """Rough token estimate: 4 chars ≈ 1 token."""
         char_count = 0
         for i, message in enumerate(messages):
-            if message[0] == "system":
-                for it in message[1]:
-                    char_count += len(it["text"])
+            if message.role == "system":
+                for it in message.content:
+                    if is_text_item(it):
+                        char_count += len(it["text"])
             elif i < len(messages) - 1:
-                for it in message[1]:
+                for it in message.content:
                     if is_text_item(it):
                         char_count += len(it["text"])
                     else:
